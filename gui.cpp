@@ -214,7 +214,6 @@ MainWindow::MainWindow() {
     auto* hm_container = new QWidget;
     auto* hm_lo = new QVBoxLayout(hm_container);
     auto* hm_row1 = new QHBoxLayout;
-    auto* hm_row2 = new QHBoxLayout;
 
     auto add_hm = [this](const QString& title, QWidget*& w, HeatmapWidget*& hm) {
         w = new QWidget;
@@ -226,19 +225,13 @@ MainWindow::MainWindow() {
         hm = new HeatmapWidget;
         lo->addWidget(hm, 1);
     };
-    QWidget *wt, *wp, *wd, *ww1, *ww2;
+    QWidget *wt, *wp, *wd;
     add_hm("Target", wt, hm_target);
     add_hm("Prediction", wp, hm_pred);
     add_hm("|Diff|", wd, hm_diff);
-    add_hm("FFN W1", ww1, hm_w1);
-    add_hm("FFN W2", ww2, hm_w2);
     hm_row1->addWidget(wt); hm_row1->addWidget(wp); hm_row1->addWidget(wd);
-    hm_row2->addWidget(ww1); hm_row2->addWidget(ww2);
-    auto* dummy = new QWidget;
-    hm_row2->addWidget(dummy);
 
     hm_lo->addLayout(hm_row1);
-    hm_lo->addLayout(hm_row2);
     right_lo->addWidget(hm_container, 1);
 
     hsplit->addWidget(right);
@@ -295,8 +288,6 @@ void MainWindow::startTraining() {
     hm_target->clear();
     hm_pred->clear();
     hm_diff->clear();
-    hm_w1->clear();
-    hm_w2->clear();
 
     worker_thread.start();
     heatmap_timer->start();

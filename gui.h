@@ -102,7 +102,7 @@ private:
     QPushButton *start_btn, *pause_btn, *stop_btn;
     QTextEdit *log_edit;
     AccuracyPlot *accuracy_plot;
-    HeatmapWidget *hm_target, *hm_pred, *hm_diff, *hm_w1, *hm_w2;
+    HeatmapWidget *hm_target, *hm_pred, *hm_diff;
 
     QThread worker_thread;
     TrainWorker* worker = nullptr;
