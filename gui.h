@@ -22,6 +22,7 @@
 #include <QPainterPath>
 #include <QTimer>
 #include <QLabel>
+#include <QPointer>
 #include <atomic>
 #include <vector>
 #include <deque>
@@ -105,6 +106,6 @@ private:
     HeatmapWidget *hm_target, *hm_pred, *hm_diff;
 
     QThread worker_thread;
-    TrainWorker* worker = nullptr;
+    QPointer<TrainWorker> worker;
     QTimer* heatmap_timer = nullptr;
 };

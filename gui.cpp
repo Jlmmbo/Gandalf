@@ -336,27 +336,14 @@ void MainWindow::pollHeatmap() {
         if (!worker->hm_updated) return;
         V = worker->hm_V_local;
         pred_copy = worker->hm_pred_data;
+        worker->hm_updated = false;
     }
     if (V < 2) return;
-
-    auto mandel = [V](int i, int j) {
-        float x = -2.0f + i * 4.0f / V;
-        float y = -2.0f + j * 4.0f / V;
-        float zx = 0, zy = 0;
-        int iter = 0;
-        while (zx*zx + zy*zy < 4.0f && iter < V - 1) {
-            float tmp = zx*zx - zy*zy + x;
-            zy = 2.0f * zx * zy + y;
-            zx = tmp;
-            ++iter;
-        }
-        return iter;
-    };
 
     std::vector<float> tgt(V * V), pred(V * V), diff(V * V);
     for (int i = 0; i < V; ++i)
         for (int j = 0; j < V; ++j)
-            tgt[i * V + j] = (float)mandel(i, j);
+            tgt[i * V + j] = (float)mandelbrot(i, j, V);
 
     for (int i = 0; i < V; ++i)
         for (int j = 0; j < V; ++j) {
@@ -377,19 +364,7 @@ void TrainWorker::run() {
     int d_dim = d_model;
     int ff_h = d_dim * 2;
     int B = batch;
-    auto f = [V](int i, int j) {
-        float x = -2.0f + i * 4.0f / V;
-        float y = -2.0f + j * 4.0f / V;
-        float zx = 0, zy = 0;
-        int iter = 0;
-        while (zx*zx + zy*zy < 4.0f && iter < V - 1) {
-            float tmp = zx*zx - zy*zy + x;
-            zy = 2.0f * zx * zy + y;
-            zx = tmp;
-            ++iter;
-        }
-        return iter;
-    };
+    auto f = [V](int i, int j) { return mandelbrot(i, j, V); };
 
     auto [train_ds, test_ds] = IntegerPairDataset::grid_split(V, 0.2, f);
 
@@ -472,6 +447,7 @@ void TrainWorker::run() {
                 int pred; l_row.maxCoeff(&pred);
                 if (pred == targets(si)) ++correct;
             }
+            dlogits /= (float)B_actual;
             total += B_actual;
 
             model.backward(dlogits);
@@ -485,7 +461,8 @@ void TrainWorker::run() {
             }
 
             ++t;
-            float lr_t = lr * std::sqrt(1.f - std::pow(beta2, t)) / (1.f - std::pow(beta1, t));
+            float m_bias = 1.f - std::pow(beta1, t);
+            float v_bias = 1.f - std::pow(beta2, t);
             std::vector<Eigen::MatrixXf*> mat_gs = {
                 &model.grad.dE, &model.grad.dU, &model.grad.dP,
                 &model.grad.dWq, &model.grad.dWk, &model.grad.dWv,
@@ -496,7 +473,7 @@ void TrainWorker::run() {
                 const auto& g = *mat_gs[i];
                 s.m = beta1 * s.m + (1.f - beta1) * g;
                 s.v = beta2 * s.v + (1.f - beta2) * g.cwiseProduct(g);
-                *mat_ptrs[i] -= (lr_t * s.m.array() / (s.v.array().sqrt() + eps)).matrix();
+                *mat_ptrs[i] -= (lr * (s.m.array() / m_bias) / ((s.v.array() / v_bias).sqrt() + eps)).matrix();
             }
             std::vector<Eigen::VectorXf*> vec_gs = {
                 &model.grad.dln1_gamma, &model.grad.dln1_beta,
@@ -508,7 +485,7 @@ void TrainWorker::run() {
                 const auto& g = *vec_gs[i];
                 s.m = beta1 * s.m + (1.f - beta1) * g;
                 s.v = beta2 * s.v + (1.f - beta2) * g.cwiseProduct(g);
-                *vec_ptrs[i] -= (lr_t * s.m.array() / (s.v.array().sqrt() + eps)).matrix();
+                *vec_ptrs[i] -= (lr * (s.m.array() / m_bias) / ((s.v.array() / v_bias).sqrt() + eps)).matrix();
             }
         }
 
@@ -562,11 +539,12 @@ void TrainWorker::run() {
                     grid_pred[gs + k] = pred;
                 }
             }
-            hm_mutex.lock();
-            hm_pred_data = std::move(grid_pred);
-            hm_V_local = V;
-            hm_updated = true;
-            hm_mutex.unlock();
+            {
+                QMutexLocker l(&hm_mutex);
+                hm_pred_data = std::move(grid_pred);
+                hm_V_local = V;
+                hm_updated = true;
+            }
         }
     }
 

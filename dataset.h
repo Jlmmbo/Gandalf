@@ -26,6 +26,15 @@ public:
         }
     }
 
+private:
+    IntegerPairDataset(int vocab, int sz) : vocab_size(vocab), size(sz) {
+        a.resize(size);
+        b.resize(size);
+        targets.resize(size);
+    }
+
+public:
+
     int get_size() const { return size; }
 
     std::tuple<int, int, int> get(int idx) const {
@@ -38,8 +47,8 @@ public:
         int test_sz = static_cast<int>(total_size * test_ratio);
         int train_sz = total_size - test_sz;
         IntegerPairDataset full(vocab, total_size, std::move(func));
-        IntegerPairDataset train(vocab, train_sz, [](int, int) { return 0; });
-        IntegerPairDataset test(vocab, test_sz, [](int, int) { return 0; });
+        IntegerPairDataset train(vocab, train_sz);
+        IntegerPairDataset test(vocab, test_sz);
         train.a.assign(full.a.begin(), full.a.begin() + train_sz);
         train.b.assign(full.b.begin(), full.b.begin() + train_sz);
         train.targets.assign(full.targets.begin(), full.targets.begin() + train_sz);
@@ -58,8 +67,8 @@ public:
         std::iota(order.begin(), order.end(), 0);
         std::shuffle(order.begin(), order.end(), std::mt19937(42));
 
-        IntegerPairDataset train(vocab, train_sz, [](int, int) { return 0; });
-        IntegerPairDataset test(vocab, test_sz, [](int, int) { return 0; });
+        IntegerPairDataset train(vocab, train_sz);
+        IntegerPairDataset test(vocab, test_sz);
         for (int k = 0; k < train_sz; ++k) {
             int idx = order[k];
             int i = idx / vocab, j = idx % vocab;

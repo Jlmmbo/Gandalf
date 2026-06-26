@@ -6,6 +6,31 @@
 #include <string>
 #include <vector>
 
+enum class Activation { ReLU, SiLU, Tanh, Identity, GELU };
+
+inline Activation activation_from_string(const std::string& s) {
+    if (s == "relu") return Activation::ReLU;
+    if (s == "silu" || s == "swish") return Activation::SiLU;
+    if (s == "tanh") return Activation::Tanh;
+    if (s == "identity" || s == "none") return Activation::Identity;
+    return Activation::GELU;
+}
+
+inline int mandelbrot(int i, int j, int V) {
+    if (V < 2) return 0;
+    float x = -2.0f + i * 4.0f / V;
+    float y = -2.0f + j * 4.0f / V;
+    float zx = 0, zy = 0;
+    int iter = 0;
+    while (zx*zx + zy*zy < 4.0f && iter < V - 1) {
+        float tmp = zx*zx - zy*zy + x;
+        zy = 2.0f * zx * zy + y;
+        zx = tmp;
+        ++iter;
+    }
+    return iter;
+}
+
 struct Gradients {
     Eigen::MatrixXf dE, dU, dP;
     Eigen::MatrixXf dWq, dWk, dWv;
@@ -28,42 +53,42 @@ struct Gradients {
 
 template<typename T>
 struct ActFunctor {
-    const std::string* act;
-    ActFunctor(const std::string& a) : act(&a) {}
+    const Activation* act;
+    ActFunctor(const Activation& a) : act(&a) {}
     T operator()(T x) const {
-        if (*act == "relu") return x > 0 ? x : 0;
-        if (*act == "silu" || *act == "swish") {
+        if (*act == Activation::ReLU) return x > 0 ? x : 0;
+        if (*act == Activation::SiLU) {
             T s = 1 / (1 + std::exp(-x));
             return x * s;
         }
-        if (*act == "tanh") return std::tanh(x);
-        if (*act == "identity" || *act == "none") return x;
-        return x * T(0.5) * (1 + std::erff(x * T(0.7071067811865475)));
+        if (*act == Activation::Tanh) return std::tanh(x);
+        if (*act == Activation::Identity) return x;
+        return x * T(0.5) * (1 + std::erf(x * T(0.7071067811865475)));
     }
 };
 
 template<typename T>
 struct ActGradFunctor {
-    const std::string* act;
-    ActGradFunctor(const std::string& a) : act(&a) {}
+    const Activation* act;
+    ActGradFunctor(const Activation& a) : act(&a) {}
     T operator()(T x) const {
-        if (*act == "relu") return x > 0 ? 1 : 0;
-        if (*act == "silu" || *act == "swish") {
+        if (*act == Activation::ReLU) return x > 0 ? 1 : 0;
+        if (*act == Activation::SiLU) {
             T s = 1 / (1 + std::exp(-x));
             return s + x * s * (1 - s);
         }
-        if (*act == "tanh") { T t = std::tanh(x); return 1 - t * t; }
-        if (*act == "identity" || *act == "none") return 1;
+        if (*act == Activation::Tanh) { T t = std::tanh(x); return 1 - t * t; }
+        if (*act == Activation::Identity) return 1;
         T c = T(0.7071067811865475);
-        return T(0.5) * (1 + std::erff(x * c)) +
-               x * std::exp(-x * x * T(0.5)) * T(0.3989422804014327) * c;
+        return T(0.5) * (1 + std::erf(x * c)) +
+               x * std::exp(-x * x * T(0.5)) * T(0.3989422804014327);
     }
 };
 
 class FFNNAttentionModel {
 public:
     int V, d, ff_hidden;
-    std::string activation;
+    Activation activation;
 
     Eigen::MatrixXf E, U, P;
     Eigen::MatrixXf Wq, Wk, Wv;
@@ -78,7 +103,7 @@ public:
 
     FFNNAttentionModel(int vocab_size, int d_model = 64, int ff_hidden_ = 128,
                        const std::string& act = "gelu")
-        : V(vocab_size), d(d_model), ff_hidden(ff_hidden_), activation(act) {
+        : V(vocab_size), d(d_model), ff_hidden(ff_hidden_), activation(activation_from_string(act)) {
         std::mt19937 rng(42);
         std::normal_distribution<float> dist(0.f, 1.f);
         auto randn = [&](int r, int c) {
@@ -311,9 +336,9 @@ private:
         int B = x.rows(), n = x.cols();
         mu.resize(B); var.resize(B); x_hat.resize(B, n); y.resize(B, n);
         Eigen::MatrixXf centered = x;
-        Eigen::RowVectorXf mean = x.colwise().mean();
-        centered.rowwise() -= mean;
-        mu = mean.transpose();
+        Eigen::VectorXf mean = x.rowwise().mean();
+        centered.colwise() -= mean;
+        mu = mean;
         var = centered.array().square().rowwise().sum() / n;
         Eigen::ArrayXf inv_std = (var.array() + 1e-5f).sqrt().inverse();
         x_hat = centered.array().colwise() * inv_std;
@@ -332,7 +357,7 @@ private:
                                           Eigen::VectorXf& dbeta) {
         int B = x.rows(), n = x.cols();
         Eigen::MatrixXf centered = x;
-        centered.rowwise() -= mu.transpose();
+        centered.colwise() -= mu;
         Eigen::ArrayXf inv_std = (var.array() + 1e-5f).sqrt().inverse();
 
         Eigen::MatrixXf dx_hat = dy.array().rowwise() * gamma.transpose().array();
@@ -341,7 +366,7 @@ private:
         Eigen::VectorXf dvar = (dx_hat.cwiseProduct(centered)).rowwise().sum();
         dvar.array() *= (-0.5f) * inv_std.cube();
 
-        // dmu = -inv_std * sum(dx_hat, axis=1)  (dvar/dmu = 0 because centered sums to 0)
+        // dmu = -inv_std * sum(dx_hat, axis=1)
         Eigen::VectorXf dmu = (dx_hat.array().colwise() * (-inv_std)).rowwise().sum();
 
         // dx = dx_hat * inv_std + centered * (2/n * dvar) + dmu/n

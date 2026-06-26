@@ -42,17 +42,18 @@ public:
 
     void step(Gradients& g) {
         ++t;
-        float lr_t = lr * std::sqrt(1.f - std::pow(beta2, t)) / (1.f - std::pow(beta1, t));
+        float m_bias = 1.f - std::pow(beta1, t);
+        float v_bias = 1.f - std::pow(beta2, t);
 
         auto step_mat = [&](Eigen::MatrixXf* p, Eigen::MatrixXf& m, Eigen::MatrixXf& v, const Eigen::MatrixXf& g_) {
             m = beta1 * m + (1.f - beta1) * g_;
             v = beta2 * v + (1.f - beta2) * g_.cwiseProduct(g_);
-            *p -= (lr_t * m.array() / (v.array().sqrt() + eps)).matrix();
+            *p -= (lr * (m.array() / m_bias) / ((v.array() / v_bias).sqrt() + eps)).matrix();
         };
         auto step_vec = [&](Eigen::VectorXf* p, Eigen::VectorXf& m, Eigen::VectorXf& v, const Eigen::VectorXf& g_) {
             m = beta1 * m + (1.f - beta1) * g_;
             v = beta2 * v + (1.f - beta2) * g_.cwiseProduct(g_);
-            *p -= (lr_t * m.array() / (v.array().sqrt() + eps)).matrix();
+            *p -= (lr * (m.array() / m_bias) / ((v.array() / v_bias).sqrt() + eps)).matrix();
         };
 
         std::vector<Eigen::MatrixXf*> mat_gs = {&g.dE, &g.dU, &g.dP, &g.dWq, &g.dWk, &g.dWv, &g.dW1, &g.dW2};
@@ -64,21 +65,6 @@ public:
             step_vec(vec_params[i], vec_m[i], vec_v[i], *vec_gs[i]);
     }
 };
-
-int mandelbrot_f(int i, int j, int V) {
-    if (V < 2) return 0;
-    float x = -2.0f + i * 4.0f / V;
-    float y = -2.0f + j * 4.0f / V;
-    float zx = 0, zy = 0;
-    int iter = 0;
-    while (zx*zx + zy*zy < 4.0f && iter < V - 1) {
-        float tmp = zx*zx - zy*zy + x;
-        zy = 2.0f * zx * zy + y;
-        zx = tmp;
-        ++iter;
-    }
-    return iter;
-}
 
 int main(int argc, char** argv) {
     int vocab = 16, epochs = 200000000, batch = 128, d_model = 64;
@@ -105,7 +91,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    auto f = [vocab](int i, int j) { return mandelbrot_f(i, j, vocab); };
+    auto f = [vocab](int i, int j) { return mandelbrot(i, j, vocab); };
     auto datasets = IntegerPairDataset::grid_split(vocab, 0.2, f);
     auto& train_ds = datasets.first;
     auto& test_ds = datasets.second;
@@ -166,6 +152,7 @@ int main(int argc, char** argv) {
                 l_row.maxCoeff(&pred);
                 if (pred == tgt) ++correct;
             }
+            dlogits /= (float)B;
             train_loss += batch_loss;
             total += B;
 
