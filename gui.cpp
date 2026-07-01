@@ -16,11 +16,11 @@ constexpr int GUI_MAX_ITER = 256;
 
 // ---- AccuracyPlot ----
 void AccuracyPlot::addPoint(float train, float test) {
-    train_accs.push_back(train);
-    test_accs.push_back(test);
-    if (train_accs.size() > 5000) {
-        train_accs.pop_front();
-        test_accs.pop_front();
+    train_errs.push_back(1.f - train);
+    test_errs.push_back(1.f - test);
+    if (train_errs.size() > 5000) {
+        train_errs.pop_front();
+        test_errs.pop_front();
     }
     update();
 }
@@ -45,7 +45,7 @@ void AccuracyPlot::paintEvent(QPaintEvent*) {
     p.setPen(Qt::black);
     p.drawRect(pad, pad, rw, rh);
 
-    int n = (int)train_accs.size();
+    int n = (int)train_errs.size();
     if (n < 2) {
         p.drawText(rect(), Qt::AlignCenter, "Training...");
         return;
@@ -79,15 +79,15 @@ void AccuracyPlot::paintEvent(QPaintEvent*) {
         p.setPen(QPen(color, 2));
         p.drawPath(path);
     };
-    draw_line(train_accs, QColor(50, 120, 220));
-    draw_line(test_accs, QColor(220, 80, 50));
+    draw_line(train_errs, QColor(50, 120, 220));
+    draw_line(test_errs, QColor(220, 80, 50));
 
     p.setPen(Qt::black);
     drawTextCenter(p, pad + rw / 2, h - 20, "Epoch");
     QTransform tf = p.transform();
     p.translate(12, pad + rh / 2);
     p.rotate(-90);
-    p.drawText(0, 0, "Accuracy");
+    p.drawText(0, 0, "Error");
     p.setTransform(tf);
 
     p.fillRect(w - 140, 8, 130, 40, QColor(255, 255, 255, 200));
@@ -312,8 +312,8 @@ void MainWindow::startTraining() {
     pause_btn->setEnabled(true);
     pause_btn->setText("Pause");
 
-    accuracy_plot->train_accs.clear();
-    accuracy_plot->test_accs.clear();
+    accuracy_plot->train_errs.clear();
+    accuracy_plot->test_errs.clear();
     hm_target->clear();
     hm_pred->clear();
     hm_diff->clear();

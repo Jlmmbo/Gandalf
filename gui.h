@@ -32,7 +32,7 @@ int run_gui(int argc, char** argv);
 class AccuracyPlot : public QWidget {
     Q_OBJECT
 public:
-    std::deque<float> train_accs, test_accs;
+    std::deque<float> train_errs, test_errs;
     void addPoint(float train, float test);
 protected:
     void paintEvent(QPaintEvent*) override;
