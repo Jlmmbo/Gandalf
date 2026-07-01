@@ -23,6 +23,7 @@
 #include <QTimer>
 #include <QLabel>
 #include <QPointer>
+#include <QShortcut>
 #include <atomic>
 #include <vector>
 #include <deque>
@@ -44,6 +45,7 @@ class HeatmapWidget : public QWidget {
 public:
     enum Type { Target, Prediction, Diff, Weight };
     void setData(const std::vector<float>& data, int rows, int cols, Type type, float vmin, float vmax);
+    void setViewport(float cx, float cy, float zoom);
     void clear();
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -53,6 +55,7 @@ private:
     int m_rows = 0, m_cols = 0;
     Type m_type = Target;
     float m_vmin = 0, m_vmax = 1;
+    float m_vp_cx = 0.5f, m_vp_cy = 0.5f, m_vp_zoom = 1.0f;
 };
 
 class TrainWorker : public QObject {
@@ -112,4 +115,8 @@ private:
     QTimer* heatmap_timer = nullptr;
     std::vector<float> m_hm_target;
     int m_hm_resolution = 0;
+    float m_vp_cx = 0.5f, m_vp_cy = 0.5f, m_vp_zoom = 1.0f;
+    void updateHeatmapViewport();
+    void adjustZoom(float factor);
+    void pan(float dx, float dy);
 };
