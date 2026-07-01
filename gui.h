@@ -110,4 +110,6 @@ private:
     QThread worker_thread;
     QPointer<TrainWorker> worker;
     QTimer* heatmap_timer = nullptr;
+    std::vector<float> m_hm_target;
+    int m_hm_resolution = 0;
 };

@@ -321,6 +321,8 @@ void MainWindow::startTraining() {
     pause_btn->setEnabled(true);
     pause_btn->setText("Pause");
 
+    m_hm_resolution = 0;
+    m_hm_target.clear();
     accuracy_plot->train_errs.clear();
     accuracy_plot->test_errs.clear();
     hm_target->clear();
@@ -378,21 +380,25 @@ void MainWindow::pollHeatmap() {
     }
     if (R < 2) return;
 
-    std::vector<float> tgt(R * R), pred(R * R), diff(R * R);
-    for (int i = 0; i < R; ++i)
-        for (int j = 0; j < R; ++j) {
-            float x = (i + 0.5f) / R;
-            float y = (j + 0.5f) / R;
-            tgt[i * R + j] = (float)mandelbrot_cont(x, y, GUI_MAX_ITER);
-        }
+    if (R != m_hm_resolution) {
+        m_hm_target.resize(R * R);
+        for (int i = 0; i < R; ++i)
+            for (int j = 0; j < R; ++j) {
+                float x = (i + 0.5f) / R;
+                float y = (j + 0.5f) / R;
+                m_hm_target[i * R + j] = (float)mandelbrot_cont(x, y, GUI_MAX_ITER);
+            }
+        m_hm_resolution = R;
+    }
 
+    std::vector<float> pred(R * R), diff(R * R);
     for (int i = 0; i < R * R; ++i) {
         pred[i] = pred_copy.empty() ? 0.f : pred_copy[i];
-        diff[i] = std::abs(pred[i] - tgt[i]);
+        diff[i] = std::abs(pred[i] - m_hm_target[i]);
     }
 
     float max_v = (float)GUI_MAX_ITER;
-    hm_target->setData(tgt, R, R, HeatmapWidget::Target, 0, max_v);
+    hm_target->setData(m_hm_target, R, R, HeatmapWidget::Target, 0, max_v);
     hm_pred->setData(pred, R, R, HeatmapWidget::Prediction, 0, max_v);
     hm_diff->setData(diff, R, R, HeatmapWidget::Diff, 0, max_v);
 }
