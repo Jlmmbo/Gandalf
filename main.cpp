@@ -72,7 +72,7 @@ public:
 int main(int argc, char** argv) {
     int epochs = 200000000, batch = 128, d_model = 64;
     int ff_hidden = 64, n_hidden_layers = 10;
-    float lr = 1e-3f, weight_decay = 0.f;
+    float lr = 1e-3f, weight_decay = 0.f, grad_clip = 1.0f;
     std::string activation = "gelu";
     int dataset_size = 10000, seed = 0;
 
@@ -86,6 +86,7 @@ int main(int argc, char** argv) {
         else if (arg == "--dataset-size" && i + 1 < argc) dataset_size = std::stoi(next());
         else if (arg == "--weight-decay" && i + 1 < argc) weight_decay = std::stof(next());
         else if (arg == "--activation" && i + 1 < argc) activation = next();
+        else if (arg == "--grad-clip" && i + 1 < argc) grad_clip = std::stof(next());
         else if (arg == "--neurons" && i + 1 < argc) ff_hidden = std::stoi(next());
         else if (arg == "--layers" && i + 1 < argc) n_hidden_layers = std::stoi(next());
         else if (arg == "--seed" && i + 1 < argc) seed = std::stoi(next());
@@ -114,7 +115,8 @@ int main(int argc, char** argv) {
     std::cout << "Gandalf C++ | d=" << d_model
               << " ff=" << ff_hidden << " layers=" << n_hidden_layers
               << " lr=" << lr << " act=" << activation
-              << " batch=" << batch << " max_iter=" << MAX_ITER << "\n";
+              << " batch=" << batch << " max_iter=" << MAX_ITER
+              << " grad_clip=" << grad_clip << "\n";
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
         auto t0 = std::chrono::steady_clock::now();
@@ -165,6 +167,27 @@ int main(int argc, char** argv) {
                 for (int i = 0; i <= model.n_hidden_layers; ++i)
                     apply_wd(model.grad.dW[i], model.W[i]);
             }
+            if (grad_clip > 0.f) {
+                float norm_sq = 0.f;
+                auto accum = [&](const auto& g) { norm_sq += g.squaredNorm(); };
+                accum(model.grad.dW_in); accum(model.grad.dU); accum(model.grad.dP);
+                accum(model.grad.dWq); accum(model.grad.dWk); accum(model.grad.dWv);
+                accum(model.grad.dln1_gamma); accum(model.grad.dln1_beta);
+                accum(model.grad.dln2_gamma); accum(model.grad.dln2_beta);
+                for (auto& dw : model.grad.dW) accum(dw);
+                for (auto& db : model.grad.db) accum(db);
+                float norm = std::sqrt(norm_sq);
+                if (norm > grad_clip) {
+                    float scale = grad_clip / (norm + 1e-8f);
+                    auto scale_g = [&](auto& g) { g *= scale; };
+                    scale_g(model.grad.dW_in); scale_g(model.grad.dU); scale_g(model.grad.dP);
+                    scale_g(model.grad.dWq); scale_g(model.grad.dWk); scale_g(model.grad.dWv);
+                    scale_g(model.grad.dln1_gamma); scale_g(model.grad.dln1_beta);
+                    scale_g(model.grad.dln2_gamma); scale_g(model.grad.dln2_beta);
+                    for (auto& dw : model.grad.dW) scale_g(dw);
+                    for (auto& db : model.grad.db) scale_g(db);
+                }
+            }
             optim.step(model.grad);
         }
         train_loss /= total;
@@ -180,9 +203,8 @@ int main(int argc, char** argv) {
             for (int k = 0; k < B; ++k) {
                 float x = dist(srng);
                 float y = dist(srng);
-                int t = mandelbrot_cont(x, y, MAX_ITER);
                 coords(k, 0) = x; coords(k, 1) = y;
-                targets(k) = t;
+                targets(k) = mandelbrot_cont(x, y, MAX_ITER);
             }
             Eigen::MatrixXf pred = model.forward(coords);
             float target_max = static_cast<float>(MAX_ITER);

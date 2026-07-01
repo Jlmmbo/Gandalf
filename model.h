@@ -200,6 +200,11 @@ public:
 
         c.pooled = (c.ln2_out_0 + c.ln2_out_1) * 0.5f;
         c.pred = c.pooled * U;
+        c.pred = c.pred.unaryExpr([](float x) {
+            if (x >= 0) return 1.0f / (1.0f + std::exp(-x));
+            float e = std::exp(x);
+            return e / (1.0f + e);
+        });
         return c.pred;
     }
 
@@ -207,8 +212,14 @@ public:
         auto& c = cache;
         int B = c.B;
 
-        grad.dU += c.pooled.transpose() * dpred;
-        Eigen::MatrixXf dpooled = dpred * U.transpose();
+        Eigen::MatrixXf dout = dpred;
+        {
+            Eigen::MatrixXf s = c.pred;
+            dout = dout.cwiseProduct(s).cwiseProduct((-s.array() + 1.0f).matrix());
+        }
+
+        grad.dU += c.pooled.transpose() * dout;
+        Eigen::MatrixXf dpooled = dout * U.transpose();
 
         Eigen::MatrixXf dln2_out_0 = dpooled * 0.5f;
         Eigen::MatrixXf dln2_out_1 = dpooled * 0.5f;
