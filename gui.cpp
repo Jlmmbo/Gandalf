@@ -128,13 +128,6 @@ void HeatmapWidget::paintEvent(QPaintEvent*) {
     auto colormap = [&](float v) {
         float t = (v - m_vmin) / (m_vmax - m_vmin);
         t = std::max(0.f, std::min(1.f, t));
-        if (m_type == Diff) {
-            float u = t * 2.f - 1.f;
-            if (u < 0)
-                return QColor::fromRgbF(0.5f + 0.5f * u, 0.5f + 0.5f * u, 1.f);
-            else
-                return QColor::fromRgbF(1.f, 0.5f - 0.5f * u, 0.5f - 0.5f * u);
-        }
         if (m_type == Weight) {
             float tt = 2.f * t - 1.f;
             if (tt < 0) return QColor::fromRgbF(1.f + tt, 1.f + tt, 1.f);
