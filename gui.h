@@ -66,7 +66,7 @@ public:
     bool heatmap_enabled = true;
     int heatmap_every = 1;
     QMutex hm_mutex;
-    std::vector<int> hm_pred_data;
+    std::vector<float> hm_pred_data;
     int hm_resolution = 0;
     bool hm_updated = false;
 

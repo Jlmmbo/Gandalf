@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+constexpr int MAX_ITER = 256;
+
 class Adam {
 public:
     float lr, beta1, beta2, eps;
@@ -67,18 +69,19 @@ public:
 };
 
 int main(int argc, char** argv) {
-    int resolution = 16, epochs = 200000000, batch = 128, d_model = 64;
+    int epochs = 200000000, batch = 128, d_model = 64;
     float lr = 1e-3f, weight_decay = 0.f;
     std::string activation = "gelu";
+    int dataset_size = 10000;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         auto next = [&]() { return std::string(argv[++i]); };
-        if (arg == "--resolution" && i + 1 < argc) resolution = std::stoi(next());
-        else if (arg == "--epochs" && i + 1 < argc) epochs = std::stoi(next());
+        if (arg == "--epochs" && i + 1 < argc) epochs = std::stoi(next());
         else if (arg == "--batch" && i + 1 < argc) batch = std::stoi(next());
         else if (arg == "--lr" && i + 1 < argc) lr = std::stof(next());
         else if (arg == "--d_model" && i + 1 < argc) d_model = std::stoi(next());
+        else if (arg == "--dataset-size" && i + 1 < argc) dataset_size = std::stoi(next());
         else if (arg == "--weight-decay" && i + 1 < argc) weight_decay = std::stof(next());
         else if (arg == "--activation" && i + 1 < argc) activation = next();
         else if (arg == "--gui") {
@@ -91,12 +94,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    auto f = [resolution](float x, float y) { return mandelbrot_cont(x, y, resolution - 1); };
-    auto datasets = PointDataset::grid_split(resolution, 0.2, f);
+    auto f = [](float x, float y) { return mandelbrot_cont(x, y, MAX_ITER); };
+    auto datasets = PointDataset::train_test_split(dataset_size, 0.2, f);
     auto& train_ds = datasets.first;
     auto& test_ds = datasets.second;
 
-    FFNNAttentionModel model(resolution, d_model, d_model * 2, activation);
+    FFNNAttentionModel model(d_model, d_model * 2, activation);
     Adam optim(lr);
     optim.add(model.W_in); optim.add(model.U); optim.add(model.P);
     optim.add(model.Wq); optim.add(model.Wk); optim.add(model.Wv);
@@ -109,9 +112,9 @@ int main(int argc, char** argv) {
     std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 srng(42);
 
-    std::cout << "Gandalf C++ | res=" << resolution << " d=" << d_model
+    std::cout << "Gandalf C++ | d=" << d_model
               << " lr=" << lr << " act=" << activation
-              << " batch=" << batch << "\n";
+              << " batch=" << batch << " max_iter=" << MAX_ITER << "\n";
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
         auto t0 = std::chrono::steady_clock::now();
@@ -119,16 +122,14 @@ int main(int argc, char** argv) {
 
         float train_loss = 0.f;
         int correct = 0, total = 0;
-        Eigen::MatrixXf coords, dlogits;
-        Eigen::VectorXi targets;
-        Eigen::VectorXf max_vals, sum_exp;
+        Eigen::MatrixXf coords;
 
         for (int bi = 0; bi < train_ds.get_size(); bi += batch) {
             int end = std::min(bi + batch, train_ds.get_size());
             int B = end - bi;
 
             coords.resize(B, 2);
-            targets.resize(B);
+            Eigen::VectorXi targets(B);
             for (int si = 0; si < B; ++si) {
                 auto [x, y, t] = train_ds.get(idx[bi + si]);
                 coords(si, 0) = x; coords(si, 1) = y;
@@ -136,27 +137,18 @@ int main(int argc, char** argv) {
             }
 
             model.zero_grad();
-            Eigen::MatrixXf logits = model.forward(coords);
+            Eigen::MatrixXf pred = model.forward(coords);
 
-            max_vals = logits.rowwise().maxCoeff();
-            Eigen::MatrixXf exps = (logits.colwise() - max_vals).array().exp();
-            sum_exp = exps.rowwise().sum();
+            Eigen::VectorXf diff = pred.col(0) - targets.cast<float>();
+            float batch_loss = diff.array().square().mean();
+            train_loss += batch_loss * B;
 
-            float batch_loss = 0.f;
+            Eigen::MatrixXf dlogits(B, 1);
+            dlogits.col(0) = 2.f * diff / (float)B;
             for (int si = 0; si < B; ++si) {
-                int tgt = targets(si);
-                batch_loss -= std::log(exps(si, tgt) / sum_exp(si) + 1e-38f);
+                if (std::abs(pred(si, 0) - targets(si)) < 0.5f)
+                    ++correct;
             }
-
-            dlogits = exps.array().colwise() / sum_exp.array();
-            for (int si = 0; si < B; ++si) {
-                dlogits(si, targets(si)) -= 1.f;
-                int pred;
-                logits.row(si).maxCoeff(&pred);
-                if (pred == targets(si)) ++correct;
-            }
-            dlogits /= (float)B;
-            train_loss += batch_loss;
             total += B;
 
             model.backward(dlogits);
@@ -172,28 +164,34 @@ int main(int argc, char** argv) {
         }
         train_loss /= total;
 
+        float test_loss = 0.f;
         int test_correct = 0;
         for (int si = 0; si < test_ds.get_size(); si += batch) {
             int end = std::min(si + batch, test_ds.get_size());
             int B = end - si;
             Eigen::MatrixXf coords(B, 2);
+            Eigen::VectorXi targets(B);
             for (int k = 0; k < B; ++k) {
                 auto [x, y, t] = test_ds.get(si + k);
                 coords(k, 0) = x; coords(k, 1) = y;
+                targets(k) = t;
             }
-            Eigen::MatrixXf logits = model.forward(coords);
+            Eigen::MatrixXf pred = model.forward(coords);
+            Eigen::VectorXf diff = pred.col(0) - targets.cast<float>();
+            test_loss += diff.array().square().sum();
             for (int k = 0; k < B; ++k) {
-                int pred; logits.row(k).maxCoeff(&pred);
-                auto [x, y, t] = test_ds.get(si + k);
-                if (pred == t) ++test_correct;
+                if (std::abs(pred(k, 0) - targets(k)) < 0.5f)
+                    ++test_correct;
             }
         }
+        test_loss /= test_ds.get_size();
         float test_acc = static_cast<float>(test_correct) / test_ds.get_size();
 
         auto t1 = std::chrono::steady_clock::now();
         float elapsed = std::chrono::duration<float>(t1 - t0).count();
 
         std::cout << "Epoch " << std::setw(3) << epoch
+                  << " | test loss " << std::fixed << std::setprecision(5) << test_loss
                   << " | test acc " << std::fixed << std::setprecision(5) << test_acc
                   << " | time " << std::fixed << std::setprecision(2) << elapsed << "s"
                   << std::endl;

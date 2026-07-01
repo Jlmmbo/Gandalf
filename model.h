@@ -16,21 +16,6 @@ inline Activation activation_from_string(const std::string& s) {
     return Activation::GELU;
 }
 
-inline int mandelbrot(int i, int j, int V) {
-    if (V < 2) return 0;
-    float x = -2.0f + i * 4.0f / V;
-    float y = -2.0f + j * 4.0f / V;
-    float zx = 0, zy = 0;
-    int iter = 0;
-    while (zx*zx + zy*zy < 4.0f && iter < V - 1) {
-        float tmp = zx*zx - zy*zy + x;
-        zy = 2.0f * zx * zy + y;
-        zx = tmp;
-        ++iter;
-    }
-    return iter;
-}
-
 inline int mandelbrot_cont(float x, float y, int max_iter) {
     float cx = -2.0f + x * 4.0f;
     float cy = -2.0f + y * 4.0f;
@@ -55,8 +40,8 @@ struct Gradients {
     Eigen::MatrixXf dW2;
     Eigen::VectorXf db2;
 
-    void setZero(int d, int ff_hidden, int resolution) {
-        dW_in.setZero(1, d); dU.setZero(d, resolution); dP.setZero(2, d);
+    void setZero(int d, int ff_hidden) {
+        dW_in.setZero(1, d); dU.setZero(d, 1); dP.setZero(2, d);
         dWq.setZero(d, d); dWk.setZero(d, d); dWv.setZero(d, d);
         dln1_gamma.setZero(d); dln1_beta.setZero(d);
         dln2_gamma.setZero(d); dln2_beta.setZero(d);
@@ -101,7 +86,7 @@ struct ActGradFunctor {
 
 class FFNNAttentionModel {
 public:
-    int resolution, d, ff_hidden;
+    int d, ff_hidden;
     Activation activation;
 
     Eigen::MatrixXf W_in;
@@ -116,9 +101,9 @@ public:
 
     Gradients grad;
 
-    FFNNAttentionModel(int resolution_, int d_model = 64, int ff_hidden_ = 128,
+    FFNNAttentionModel(int d_model = 64, int ff_hidden_ = 128,
                        const std::string& act = "gelu")
-        : resolution(resolution_), d(d_model), ff_hidden(ff_hidden_), activation(activation_from_string(act)) {
+        : d(d_model), ff_hidden(ff_hidden_), activation(activation_from_string(act)) {
         std::mt19937 rng(42);
         std::normal_distribution<float> dist(0.f, 1.f);
         auto randn = [&](int r, int c) {
@@ -130,7 +115,7 @@ public:
         };
         float sd = 1.f / std::sqrt(static_cast<float>(d));
         W_in = randn(1, d) * sd;
-        U = randn(d, resolution) * sd;
+        U = randn(d, 1) * sd;
         P = randn(2, d) * sd;
         float sk = std::sqrt(1.f / static_cast<float>(d));
         Wq = randn(d, d) * sk; Wk = randn(d, d) * sk; Wv = randn(d, d) * sk;
@@ -138,7 +123,7 @@ public:
         W2 = randn(d, ff_hidden) * std::sqrt(1.f / ff_hidden); b2.setZero(d);
         ln1_gamma.setOnes(d); ln1_beta.setZero(d);
         ln2_gamma.setOnes(d); ln2_beta.setZero(d);
-        grad.dW_in.resize(1, d); grad.dU.resize(d, resolution); grad.dP.resize(2, d);
+        grad.dW_in.resize(1, d); grad.dU.resize(d, 1); grad.dP.resize(2, d);
         grad.dWq.resize(d, d); grad.dWk.resize(d, d); grad.dWv.resize(d, d);
         grad.dln1_gamma.resize(d); grad.dln1_beta.resize(d);
         grad.dln2_gamma.resize(d); grad.dln2_beta.resize(d);
@@ -147,7 +132,7 @@ public:
         zero_grad();
     }
 
-    void zero_grad() { grad.setZero(d, ff_hidden, resolution); }
+    void zero_grad() { grad.setZero(d, ff_hidden); }
 
     Eigen::MatrixXf forward(const Eigen::MatrixXf& coords) {
         int B = coords.rows();
@@ -196,16 +181,16 @@ public:
                       c.mu2_1, c.var2_1, c.x_hat2_1, c.ln2_out_1);
 
         c.pooled = (c.ln2_out_0 + c.ln2_out_1) * 0.5f;
-        c.logits = c.pooled * U;
-        return c.logits;
+        c.pred = c.pooled * U;
+        return c.pred;
     }
 
-    void backward(const Eigen::MatrixXf& dlogits) {
+    void backward(const Eigen::MatrixXf& dpred) {
         auto& c = cache;
         int B = c.B;
 
-        grad.dU += c.pooled.transpose() * dlogits;
-        Eigen::MatrixXf dpooled = dlogits * U.transpose();
+        grad.dU += c.pooled.transpose() * dpred;
+        Eigen::MatrixXf dpooled = dpred * U.transpose();
 
         Eigen::MatrixXf dln2_out_0 = dpooled * 0.5f;
         Eigen::MatrixXf dln2_out_1 = dpooled * 0.5f;
@@ -299,7 +284,7 @@ public:
         Eigen::VectorXf mu2_0, var2_0, mu2_1, var2_1;
         Eigen::MatrixXf x_hat2_0, x_hat2_1, ln2_out_0, ln2_out_1;
         Eigen::MatrixXf pooled;
-        Eigen::MatrixXf logits;
+        Eigen::MatrixXf pred;
     };
     BatchCache cache;
 

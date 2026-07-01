@@ -7,12 +7,12 @@
 
 class PointDataset {
 public:
-    int resolution, size;
+    int size;
     std::vector<float> xs, ys;
     std::vector<int> targets;
 
-    PointDataset(int res, int sz, std::function<int(float, float)> func)
-        : resolution(res), size(sz) {
+    PointDataset(int sz, std::function<int(float, float)> func)
+        : size(sz) {
         std::mt19937 rng(42);
         std::uniform_real_distribution<float> dist(0.f, 1.f);
         xs.resize(size);
@@ -26,7 +26,7 @@ public:
     }
 
 private:
-    PointDataset(int res, int sz) : resolution(res), size(sz) {
+    PointDataset(int sz) : size(sz) {
         xs.resize(size);
         ys.resize(size);
         targets.resize(size);
@@ -41,13 +41,13 @@ public:
     }
 
     static std::pair<PointDataset, PointDataset>
-    train_test_split(int resolution, int total_size, double test_ratio,
+    train_test_split(int total_size, double test_ratio,
                      std::function<int(float, float)> func) {
         int test_sz = static_cast<int>(total_size * test_ratio);
         int train_sz = total_size - test_sz;
-        PointDataset full(resolution, total_size, std::move(func));
-        PointDataset train(resolution, train_sz);
-        PointDataset test(resolution, test_sz);
+        PointDataset full(total_size, std::move(func));
+        PointDataset train(train_sz);
+        PointDataset test(test_sz);
         train.xs.assign(full.xs.begin(), full.xs.begin() + train_sz);
         train.ys.assign(full.ys.begin(), full.ys.begin() + train_sz);
         train.targets.assign(full.targets.begin(), full.targets.begin() + train_sz);
@@ -66,8 +66,8 @@ public:
         std::iota(order.begin(), order.end(), 0);
         std::shuffle(order.begin(), order.end(), std::mt19937(42));
 
-        PointDataset train(resolution, train_sz);
-        PointDataset test(resolution, test_sz);
+        PointDataset train(train_sz);
+        PointDataset test(test_sz);
         for (int k = 0; k < train_sz; ++k) {
             int idx = order[k];
             int i = idx / resolution, j = idx % resolution;
