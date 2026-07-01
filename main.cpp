@@ -1,5 +1,4 @@
 #include "model.h"
-#include "dataset.h"
 #ifdef GANDALF_GUI
 #include "gui.h"
 #endif
@@ -100,11 +99,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    auto f = [](float x, float y) { return mandelbrot_cont(x, y, MAX_ITER); };
-    auto datasets = PointDataset::train_test_split(dataset_size, 0.2, f);
-    auto& train_ds = datasets.first;
-    auto& test_ds = datasets.second;
-
     FFNNAttentionModel model(d_model, ff_hidden, n_hidden_layers, activation, seed);
     Adam optim(lr);
     optim.add(model.W_in); optim.add(model.U); optim.add(model.P);
@@ -114,9 +108,8 @@ int main(int argc, char** argv) {
     for (auto& w : model.W) optim.add(w);
     for (auto& b : model.b) optim.add(b);
 
-    std::vector<int> idx(train_ds.get_size());
-    std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 srng(42);
+    std::uniform_real_distribution<float> dist(0.f, 1.f);
 
     std::cout << "Gandalf C++ | d=" << d_model
               << " ff=" << ff_hidden << " layers=" << n_hidden_layers
@@ -125,20 +118,21 @@ int main(int argc, char** argv) {
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
         auto t0 = std::chrono::steady_clock::now();
-        std::shuffle(idx.begin(), idx.end(), srng);
 
         float train_loss = 0.f;
         int correct = 0, total = 0;
         Eigen::MatrixXf coords;
 
-        for (int bi = 0; bi < train_ds.get_size(); bi += batch) {
-            int end = std::min(bi + batch, train_ds.get_size());
+        for (int bi = 0; bi < dataset_size; bi += batch) {
+            int end = std::min(bi + batch, dataset_size);
             int B = end - bi;
 
             coords.resize(B, 2);
             Eigen::VectorXi targets(B);
             for (int si = 0; si < B; ++si) {
-                auto [x, y, t] = train_ds.get(idx[bi + si]);
+                float x = dist(srng);
+                float y = dist(srng);
+                int t = mandelbrot_cont(x, y, MAX_ITER);
                 coords(si, 0) = x; coords(si, 1) = y;
                 targets(si) = t;
             }
@@ -175,15 +169,18 @@ int main(int argc, char** argv) {
         }
         train_loss /= total;
 
+        int test_sz = dataset_size / 5;
         float test_loss = 0.f;
         int test_correct = 0;
-        for (int si = 0; si < test_ds.get_size(); si += batch) {
-            int end = std::min(si + batch, test_ds.get_size());
+        for (int si = 0; si < test_sz; si += batch) {
+            int end = std::min(si + batch, test_sz);
             int B = end - si;
             Eigen::MatrixXf coords(B, 2);
             Eigen::VectorXi targets(B);
             for (int k = 0; k < B; ++k) {
-                auto [x, y, t] = test_ds.get(si + k);
+                float x = dist(srng);
+                float y = dist(srng);
+                int t = mandelbrot_cont(x, y, MAX_ITER);
                 coords(k, 0) = x; coords(k, 1) = y;
                 targets(k) = t;
             }
@@ -197,8 +194,8 @@ int main(int argc, char** argv) {
                     ++test_correct;
             }
         }
-        test_loss /= test_ds.get_size();
-        float test_acc = static_cast<float>(test_correct) / test_ds.get_size();
+        test_loss /= test_sz;
+        float test_acc = static_cast<float>(test_correct) / test_sz;
 
         auto t1 = std::chrono::steady_clock::now();
         float elapsed = std::chrono::duration<float>(t1 - t0).count();

@@ -1,6 +1,5 @@
 #include "gui.h"
 #include "model.h"
-#include "dataset.h"
 #include <QApplication>
 #include <QMessageBox>
 #include <QMutexLocker>
@@ -545,9 +544,8 @@ void TrainWorker::run() {
     int ff_h = ff_hidden;
     int nL = n_hidden_layers;
     int B = batch;
-    auto f = [](float x, float y) { return mandelbrot_cont(x, y, GUI_MAX_ITER); };
-
-    auto [train_ds, test_ds] = PointDataset::train_test_split(10000, 0.2, f);
+    int dataset_sz = 10000;
+    int test_sz = dataset_sz / 5;
 
     int seed = 0;
     FFNNAttentionModel model(d_dim, ff_h, nL, activation, seed);
@@ -579,9 +577,8 @@ void TrainWorker::run() {
     float beta1 = 0.9f, beta2 = 0.999f, eps = 1e-8f;
     int t = 0;
 
-    std::vector<int> idx(train_ds.get_size());
-    std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 srng(42);
+    std::uniform_real_distribution<float> dist(0.f, 1.f);
 
     emit logMessage(QString("GUI: d=%1 ff=%2 layers=%3 lr=%4 act=%5 batch=%6")
                     .arg(d_dim).arg(ff_h).arg(nL).arg(lr)
@@ -635,13 +632,12 @@ void TrainWorker::run() {
         if (stop_flag.load()) break;
 
         auto t0 = std::chrono::steady_clock::now();
-        std::shuffle(idx.begin(), idx.end(), srng);
 
         float train_loss = 0.f;
         int correct = 0, total = 0;
         Eigen::MatrixXf coords;
 
-        for (int bi = 0; bi < train_ds.get_size(); bi += B) {
+        for (int bi = 0; bi < dataset_sz; bi += B) {
             if (stop_flag.load()) break;
             while (pause_flag.load()) {
                 if (stop_flag.load()) break;
@@ -649,13 +645,15 @@ void TrainWorker::run() {
             }
             if (stop_flag.load()) break;
 
-            int end = std::min(bi + B, train_ds.get_size());
+            int end = std::min(bi + B, dataset_sz);
             int B_actual = end - bi;
 
             coords.resize(B_actual, 2);
             Eigen::VectorXi targets(B_actual);
             for (int si = 0; si < B_actual; ++si) {
-                auto [x, y, tgt] = train_ds.get(idx[bi + si]);
+                float x = dist(srng);
+                float y = dist(srng);
+                int tgt = mandelbrot_cont(x, y, GUI_MAX_ITER);
                 coords(si, 0) = x; coords(si, 1) = y;
                 targets(si) = tgt;
             }
@@ -720,14 +718,16 @@ void TrainWorker::run() {
 
         float test_loss = 0.f;
         int test_correct = 0;
-        for (int si = 0; si < test_ds.get_size(); si += B) {
+        for (int si = 0; si < test_sz; si += B) {
             if (stop_flag.load()) break;
-            int end = std::min(si + B, test_ds.get_size());
+            int end = std::min(si + B, test_sz);
             int B_actual = end - si;
             Eigen::MatrixXf coords(B_actual, 2);
             Eigen::VectorXi targets(B_actual);
             for (int k = 0; k < B_actual; ++k) {
-                auto [x, y, tgt] = test_ds.get(si + k);
+                float x = dist(srng);
+                float y = dist(srng);
+                int tgt = mandelbrot_cont(x, y, GUI_MAX_ITER);
                 coords(k, 0) = x; coords(k, 1) = y;
                 targets(k) = tgt;
             }
@@ -741,8 +741,8 @@ void TrainWorker::run() {
                     ++test_correct;
             }
         }
-        test_loss /= test_ds.get_size();
-        float test_acc = (float)test_correct / test_ds.get_size();
+        test_loss /= test_sz;
+        float test_acc = (float)test_correct / test_sz;
         float train_acc = (float)correct / total;
 
         auto t1 = std::chrono::steady_clock::now();
