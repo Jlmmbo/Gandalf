@@ -122,16 +122,16 @@ void HeatmapWidget::paintEvent(QPaintEvent*) {
         p.drawText(rect(), Qt::AlignCenter, "Waiting...");
         return;
     }
-    int cw = width() / m_cols;
-    int ch = height() / m_rows;
 
-    auto colormap = [&](float v) {
-        float t = (v - m_vmin) / (m_vmax - m_vmin);
+    auto colormap = [](float v, float vmin, float vmax, HeatmapWidget::Type type) -> QRgb {
+        float t = (v - vmin) / (vmax - vmin);
         t = std::max(0.f, std::min(1.f, t));
-        if (m_type == Weight) {
+        if (type == HeatmapWidget::Weight) {
             float tt = 2.f * t - 1.f;
-            if (tt < 0) return QColor::fromRgbF(1.f + tt, 1.f + tt, 1.f);
-            return QColor::fromRgbF(1.f, 1.f - tt, 1.f - tt);
+            float r, g, b;
+            if (tt < 0) { r = 1.f + tt; g = 1.f + tt; b = 1.f; }
+            else { r = 1.f; g = 1.f - tt; b = 1.f - tt; }
+            return qRgba(int(r * 255), int(g * 255), int(b * 255), 255);
         }
         struct Stop { float pos; float r, g, b; };
         static const Stop stops[] = {
@@ -144,23 +144,33 @@ void HeatmapWidget::paintEvent(QPaintEvent*) {
             {1.00f, 0.60f, 0.00f, 0.00f},
         };
         int n = sizeof(stops) / sizeof(stops[0]);
-        if (t <= stops[0].pos) return QColor::fromRgbF(stops[0].r, stops[0].g, stops[0].b);
-        if (t >= stops[n-1].pos) return QColor::fromRgbF(stops[n-1].r, stops[n-1].g, stops[n-1].b);
-        for (int i = 0; i < n - 1; ++i) {
-            if (t >= stops[i].pos && t < stops[i+1].pos) {
-                float f = (t - stops[i].pos) / (stops[i+1].pos - stops[i].pos);
-                return QColor::fromRgbF(
-                    stops[i].r + (stops[i+1].r - stops[i].r) * f,
-                    stops[i].g + (stops[i+1].g - stops[i].g) * f,
-                    stops[i].b + (stops[i+1].b - stops[i].b) * f);
+        float r, g, b;
+        auto lerp = [&](int i, float f) {
+            r = stops[i].r + (stops[i+1].r - stops[i].r) * f;
+            g = stops[i].g + (stops[i+1].g - stops[i].g) * f;
+            b = stops[i].b + (stops[i+1].b - stops[i].b) * f;
+        };
+        if (t <= stops[0].pos) { r = stops[0].r; g = stops[0].g; b = stops[0].b; }
+        else if (t >= stops[n-1].pos) { r = stops[n-1].r; g = stops[n-1].g; b = stops[n-1].b; }
+        else {
+            for (int i = 0; i < n - 1; ++i) {
+                if (t >= stops[i].pos && t < stops[i+1].pos) {
+                    lerp(i, (t - stops[i].pos) / (stops[i+1].pos - stops[i].pos));
+                    break;
+                }
             }
         }
-        return QColor::fromRgbF(stops[n-1].r, stops[n-1].g, stops[n-1].b);
+        return qRgba(int(r * 255), int(g * 255), int(b * 255), 255);
     };
 
-    for (int r = 0; r < m_rows; ++r)
+    QImage img(m_cols, m_rows, QImage::Format_ARGB32);
+    for (int r = 0; r < m_rows; ++r) {
+        auto* scan = (QRgb*)img.scanLine(r);
+        int off = r * m_cols;
         for (int c = 0; c < m_cols; ++c)
-            p.fillRect(c * cw, r * ch, cw, ch, colormap(m_data[r * m_cols + c]));
+            scan[c] = colormap(m_data[off + c], m_vmin, m_vmax, m_type);
+    }
+    p.drawImage(QRect(0, 0, width(), height()), img);
 }
 
 // ---- MainWindow ----
@@ -557,16 +567,17 @@ void TrainWorker::run() {
         emit logMessage(QString::fromStdString(oss.str()));
 
         if (heatmap_enabled && (epoch % heatmap_every == 0) && !stop_flag.load()) {
-            std::vector<float> grid_pred(R * R);
-            Eigen::MatrixXf grid_coords(R * R, 2);
-            for (int i = 0; i < R; ++i)
-                for (int j = 0; j < R; ++j) {
-                    grid_coords(i * R + j, 0) = (i + 0.5f) / R;
-                    grid_coords(i * R + j, 1) = (j + 0.5f) / R;
+            int HM = std::min(R, 512);
+            std::vector<float> grid_pred(HM * HM);
+            Eigen::MatrixXf grid_coords(HM * HM, 2);
+            for (int i = 0; i < HM; ++i)
+                for (int j = 0; j < HM; ++j) {
+                    grid_coords(i * HM + j, 0) = (i + 0.5f) / HM;
+                    grid_coords(i * HM + j, 1) = (j + 0.5f) / HM;
                 }
-            for (int gs = 0; gs < R * R; gs += 4096) {
+            for (int gs = 0; gs < HM * HM; gs += 16384) {
                 if (stop_flag.load()) break;
-                int ge = std::min(gs + 4096, R * R);
+                int ge = std::min(gs + 16384, HM * HM);
                 int gB = ge - gs;
                 Eigen::MatrixXf g_in = grid_coords.middleRows(gs, gB);
                 Eigen::MatrixXf g_pred = model.forward(g_in);
@@ -576,7 +587,7 @@ void TrainWorker::run() {
             {
                 QMutexLocker l(&hm_mutex);
                 hm_pred_data = std::move(grid_pred);
-                hm_resolution = R;
+                hm_resolution = HM;
                 hm_updated = true;
             }
         }
