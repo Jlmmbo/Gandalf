@@ -126,14 +126,41 @@ void HeatmapWidget::paintEvent(QPaintEvent*) {
     auto colormap = [&](float v) {
         float t = (v - m_vmin) / (m_vmax - m_vmin);
         t = std::max(0.f, std::min(1.f, t));
-        if (m_type == Diff)
-            return QColor::fromRgbF(t, 0.2f, 1.f - t);
+        if (m_type == Diff) {
+            float u = t * 2.f - 1.f;
+            if (u < 0)
+                return QColor::fromRgbF(0.5f + 0.5f * u, 0.5f + 0.5f * u, 1.f);
+            else
+                return QColor::fromRgbF(1.f, 0.5f - 0.5f * u, 0.5f - 0.5f * u);
+        }
         if (m_type == Weight) {
             float tt = 2.f * t - 1.f;
             if (tt < 0) return QColor::fromRgbF(1.f + tt, 1.f + tt, 1.f);
             return QColor::fromRgbF(1.f, 1.f - tt, 1.f - tt);
         }
-        return QColor::fromRgbF(t, 0.2f, 0.8f * (1.f - t));
+        struct Stop { float pos; float r, g, b; };
+        static const Stop stops[] = {
+            {0.00f, 0.00f, 0.00f, 0.50f},
+            {0.15f, 0.00f, 0.00f, 1.00f},
+            {0.30f, 0.00f, 1.00f, 1.00f},
+            {0.50f, 0.00f, 0.80f, 0.00f},
+            {0.70f, 1.00f, 1.00f, 0.00f},
+            {0.85f, 1.00f, 0.40f, 0.00f},
+            {1.00f, 0.60f, 0.00f, 0.00f},
+        };
+        int n = sizeof(stops) / sizeof(stops[0]);
+        if (t <= stops[0].pos) return QColor::fromRgbF(stops[0].r, stops[0].g, stops[0].b);
+        if (t >= stops[n-1].pos) return QColor::fromRgbF(stops[n-1].r, stops[n-1].g, stops[n-1].b);
+        for (int i = 0; i < n - 1; ++i) {
+            if (t >= stops[i].pos && t < stops[i+1].pos) {
+                float f = (t - stops[i].pos) / (stops[i+1].pos - stops[i].pos);
+                return QColor::fromRgbF(
+                    stops[i].r + (stops[i+1].r - stops[i].r) * f,
+                    stops[i].g + (stops[i+1].g - stops[i].g) * f,
+                    stops[i].b + (stops[i+1].b - stops[i].b) * f);
+            }
+        }
+        return QColor::fromRgbF(stops[n-1].r, stops[n-1].g, stops[n-1].b);
     };
 
     for (int r = 0; r < m_rows; ++r)
@@ -415,6 +442,9 @@ void TrainWorker::run() {
         std::shuffle(idx.begin(), idx.end(), srng);
 
         int correct = 0, total = 0;
+        Eigen::MatrixXf coords, dlogits;
+        Eigen::VectorXi targets;
+        Eigen::VectorXf max_vals, sum_exp;
 
         for (int bi = 0; bi < train_ds.get_size(); bi += B) {
             if (stop_flag.load()) break;
@@ -427,8 +457,8 @@ void TrainWorker::run() {
             int end = std::min(bi + B, train_ds.get_size());
             int B_actual = end - bi;
 
-            Eigen::MatrixXf coords(B_actual, 2);
-            Eigen::VectorXi targets(B_actual);
+            coords.resize(B_actual, 2);
+            targets.resize(B_actual);
             for (int si = 0; si < B_actual; ++si) {
                 auto [x, y, tgt] = train_ds.get(idx[bi + si]);
                 coords(si, 0) = x; coords(si, 1) = y;
@@ -438,16 +468,15 @@ void TrainWorker::run() {
             model.zero_grad();
             Eigen::MatrixXf logits = model.forward(coords);
 
-            Eigen::MatrixXf dlogits(B_actual, R);
+            max_vals = logits.rowwise().maxCoeff();
+            Eigen::MatrixXf exps = (logits.colwise() - max_vals).array().exp();
+            sum_exp = exps.rowwise().sum();
+
+            dlogits = exps.array().colwise() / sum_exp.array();
             for (int si = 0; si < B_actual; ++si) {
-                auto l_row = logits.row(si);
-                float mx = l_row.maxCoeff();
-                Eigen::VectorXf shifted = l_row.transpose().array() - mx;
-                Eigen::VectorXf exps = shifted.array().exp();
-                float sum_exp = exps.sum();
-                dlogits.row(si) = (exps / sum_exp).transpose();
                 dlogits(si, targets(si)) -= 1.f;
-                int pred; l_row.maxCoeff(&pred);
+                int pred;
+                logits.row(si).maxCoeff(&pred);
                 if (pred == targets(si)) ++correct;
             }
             dlogits /= (float)B_actual;

@@ -119,13 +119,16 @@ int main(int argc, char** argv) {
 
         float train_loss = 0.f;
         int correct = 0, total = 0;
+        Eigen::MatrixXf coords, dlogits;
+        Eigen::VectorXi targets;
+        Eigen::VectorXf max_vals, sum_exp;
 
         for (int bi = 0; bi < train_ds.get_size(); bi += batch) {
             int end = std::min(bi + batch, train_ds.get_size());
             int B = end - bi;
 
-            Eigen::MatrixXf coords(B, 2);
-            Eigen::VectorXi targets(B);
+            coords.resize(B, 2);
+            targets.resize(B);
             for (int si = 0; si < B; ++si) {
                 auto [x, y, t] = train_ds.get(idx[bi + si]);
                 coords(si, 0) = x; coords(si, 1) = y;
@@ -135,21 +138,22 @@ int main(int argc, char** argv) {
             model.zero_grad();
             Eigen::MatrixXf logits = model.forward(coords);
 
+            max_vals = logits.rowwise().maxCoeff();
+            Eigen::MatrixXf exps = (logits.colwise() - max_vals).array().exp();
+            sum_exp = exps.rowwise().sum();
+
             float batch_loss = 0.f;
-            Eigen::MatrixXf dlogits(B, resolution);
             for (int si = 0; si < B; ++si) {
-                Eigen::VectorXf l_row = logits.row(si);
-                float mx = l_row.maxCoeff();
-                Eigen::VectorXf shifted = l_row.array() - mx;
-                Eigen::VectorXf exps = shifted.array().exp();
-                float sum_exp = exps.sum();
                 int tgt = targets(si);
-                batch_loss -= std::log(exps(tgt) / sum_exp + 1e-38f);
-                dlogits.row(si) = (exps / sum_exp).transpose();
-                dlogits(si, tgt) -= 1.f;
+                batch_loss -= std::log(exps(si, tgt) / sum_exp(si) + 1e-38f);
+            }
+
+            dlogits = exps.array().colwise() / sum_exp.array();
+            for (int si = 0; si < B; ++si) {
+                dlogits(si, targets(si)) -= 1.f;
                 int pred;
-                l_row.maxCoeff(&pred);
-                if (pred == tgt) ++correct;
+                logits.row(si).maxCoeff(&pred);
+                if (pred == targets(si)) ++correct;
             }
             dlogits /= (float)B;
             train_loss += batch_loss;
