@@ -98,10 +98,10 @@ public:
     Gradients grad;
 
     FFNNAttentionModel(int d_model = 64, int ff_hidden_ = 128, int n_layers_ = 1,
-                       const std::string& act = "gelu")
+                       const std::string& act = "gelu", int seed = 0)
         : d(d_model), ff_hidden(ff_hidden_), n_hidden_layers(n_layers_),
           activation(activation_from_string(act)) {
-        std::mt19937 rng(42);
+        std::mt19937 rng(seed == 0 ? std::random_device{}() : seed);
         std::normal_distribution<float> dist(0.f, 1.f);
         auto randn = [&](int r, int c) {
             Eigen::MatrixXf m(r, c);

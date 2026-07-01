@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
     int ff_hidden = 64, n_hidden_layers = 10;
     float lr = 1e-3f, weight_decay = 0.f;
     std::string activation = "gelu";
-    int dataset_size = 10000;
+    int dataset_size = 10000, seed = 0;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -89,6 +89,7 @@ int main(int argc, char** argv) {
         else if (arg == "--activation" && i + 1 < argc) activation = next();
         else if (arg == "--neurons" && i + 1 < argc) ff_hidden = std::stoi(next());
         else if (arg == "--layers" && i + 1 < argc) n_hidden_layers = std::stoi(next());
+        else if (arg == "--seed" && i + 1 < argc) seed = std::stoi(next());
         else if (arg == "--gui") {
 #ifdef GANDALF_GUI
             return run_gui(argc, argv);
@@ -104,7 +105,7 @@ int main(int argc, char** argv) {
     auto& train_ds = datasets.first;
     auto& test_ds = datasets.second;
 
-    FFNNAttentionModel model(d_model, ff_hidden, n_hidden_layers, activation);
+    FFNNAttentionModel model(d_model, ff_hidden, n_hidden_layers, activation, seed);
     Adam optim(lr);
     optim.add(model.W_in); optim.add(model.U); optim.add(model.P);
     optim.add(model.Wq); optim.add(model.Wk); optim.add(model.Wv);
@@ -145,14 +146,16 @@ int main(int argc, char** argv) {
             model.zero_grad();
             Eigen::MatrixXf pred = model.forward(coords);
 
-            Eigen::VectorXf diff = pred.col(0) - targets.cast<float>();
+            float target_max = static_cast<float>(MAX_ITER);
+            Eigen::VectorXf targets_norm = targets.cast<float>() / target_max;
+            Eigen::VectorXf diff = pred.col(0) - targets_norm;
             float batch_loss = diff.array().square().mean();
             train_loss += batch_loss * B;
 
             Eigen::MatrixXf dlogits(B, 1);
             dlogits.col(0) = 2.f * diff / (float)B;
             for (int si = 0; si < B; ++si) {
-                if (std::abs(pred(si, 0) - targets(si)) < 0.5f)
+                if (std::abs(pred(si, 0) * target_max - targets(si)) < 5.0f)
                     ++correct;
             }
             total += B;
@@ -185,10 +188,12 @@ int main(int argc, char** argv) {
                 targets(k) = t;
             }
             Eigen::MatrixXf pred = model.forward(coords);
-            Eigen::VectorXf diff = pred.col(0) - targets.cast<float>();
+            float target_max = static_cast<float>(MAX_ITER);
+            Eigen::VectorXf targets_norm = targets.cast<float>() / target_max;
+            Eigen::VectorXf diff = pred.col(0) - targets_norm;
             test_loss += diff.array().square().sum();
             for (int k = 0; k < B; ++k) {
-                if (std::abs(pred(k, 0) - targets(k)) < 0.5f)
+                if (std::abs(pred(k, 0) * target_max - targets(k)) < 5.0f)
                     ++test_correct;
             }
         }

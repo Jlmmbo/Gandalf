@@ -549,7 +549,8 @@ void TrainWorker::run() {
 
     auto [train_ds, test_ds] = PointDataset::train_test_split(10000, 0.2, f);
 
-    FFNNAttentionModel model(d_dim, ff_h, nL, activation);
+    int seed = 0;
+    FFNNAttentionModel model(d_dim, ff_h, nL, activation, seed);
 
     struct MState { Eigen::MatrixXf m, v; };
     std::vector<MState> mat_states;
@@ -615,7 +616,7 @@ void TrainWorker::run() {
             Eigen::MatrixXf g_in = grid_coords.middleRows(gs, gB);
             Eigen::MatrixXf g_pred = model.forward(g_in);
             for (int k = 0; k < gB; ++k)
-                grid_pred[gs + k] = g_pred(k, 0);
+                grid_pred[gs + k] = g_pred(k, 0) * GUI_MAX_ITER;
         }
         {
             QMutexLocker l(&hm_mutex);
@@ -662,14 +663,16 @@ void TrainWorker::run() {
             model.zero_grad();
             Eigen::MatrixXf pred = model.forward(coords);
 
-            Eigen::VectorXf diff = pred.col(0) - targets.cast<float>();
+            float target_max = static_cast<float>(GUI_MAX_ITER);
+            Eigen::VectorXf targets_norm = targets.cast<float>() / target_max;
+            Eigen::VectorXf diff = pred.col(0) - targets_norm;
             float batch_loss = diff.array().square().mean();
             train_loss += batch_loss * B_actual;
 
             Eigen::MatrixXf dlogits(B_actual, 1);
             dlogits.col(0) = 2.f * diff / (float)B_actual;
             for (int si = 0; si < B_actual; ++si) {
-                if (std::abs(pred(si, 0) - targets(si)) < 0.5f)
+                if (std::abs(pred(si, 0) * target_max - targets(si)) < 5.0f)
                     ++correct;
             }
             total += B_actual;
@@ -729,10 +732,12 @@ void TrainWorker::run() {
                 targets(k) = tgt;
             }
             Eigen::MatrixXf pred = model.forward(coords);
-            Eigen::VectorXf diff = pred.col(0) - targets.cast<float>();
+            float target_max = static_cast<float>(GUI_MAX_ITER);
+            Eigen::VectorXf targets_norm = targets.cast<float>() / target_max;
+            Eigen::VectorXf diff = pred.col(0) - targets_norm;
             test_loss += diff.array().square().sum();
             for (int k = 0; k < B_actual; ++k) {
-                if (std::abs(pred(k, 0) - targets(k)) < 0.5f)
+                if (std::abs(pred(k, 0) * target_max - targets(k)) < 5.0f)
                     ++test_correct;
             }
         }
