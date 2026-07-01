@@ -35,18 +35,16 @@ struct Gradients {
     Eigen::MatrixXf dWq, dWk, dWv;
     Eigen::VectorXf dln1_gamma, dln1_beta;
     Eigen::VectorXf dln2_gamma, dln2_beta;
-    Eigen::MatrixXf dW1;
-    Eigen::VectorXf db1;
-    Eigen::MatrixXf dW2;
-    Eigen::VectorXf db2;
+    std::vector<Eigen::MatrixXf> dW;
+    std::vector<Eigen::VectorXf> db;
 
-    void setZero(int d, int ff_hidden) {
-        dW_in.setZero(1, d); dU.setZero(d, 1); dP.setZero(2, d);
-        dWq.setZero(d, d); dWk.setZero(d, d); dWv.setZero(d, d);
-        dln1_gamma.setZero(d); dln1_beta.setZero(d);
-        dln2_gamma.setZero(d); dln2_beta.setZero(d);
-        dW1.setZero(ff_hidden, d); db1.setZero(ff_hidden);
-        dW2.setZero(d, ff_hidden); db2.setZero(d);
+    void setZero() {
+        dW_in.setZero(); dU.setZero(); dP.setZero();
+        dWq.setZero(); dWk.setZero(); dWv.setZero();
+        dln1_gamma.setZero(); dln1_beta.setZero();
+        dln2_gamma.setZero(); dln2_beta.setZero();
+        for (auto& m : dW) m.setZero();
+        for (auto& v : db) v.setZero();
     }
 };
 
@@ -86,7 +84,7 @@ struct ActGradFunctor {
 
 class FFNNAttentionModel {
 public:
-    int d, ff_hidden;
+    int d, ff_hidden, n_hidden_layers;
     Activation activation;
 
     Eigen::MatrixXf W_in;
@@ -94,16 +92,15 @@ public:
     Eigen::MatrixXf Wq, Wk, Wv;
     Eigen::VectorXf ln1_gamma, ln1_beta;
     Eigen::VectorXf ln2_gamma, ln2_beta;
-    Eigen::MatrixXf W1;
-    Eigen::VectorXf b1;
-    Eigen::MatrixXf W2;
-    Eigen::VectorXf b2;
+    std::vector<Eigen::MatrixXf> W;
+    std::vector<Eigen::VectorXf> b;
 
     Gradients grad;
 
-    FFNNAttentionModel(int d_model = 64, int ff_hidden_ = 128,
+    FFNNAttentionModel(int d_model = 64, int ff_hidden_ = 128, int n_layers_ = 1,
                        const std::string& act = "gelu")
-        : d(d_model), ff_hidden(ff_hidden_), activation(activation_from_string(act)) {
+        : d(d_model), ff_hidden(ff_hidden_), n_hidden_layers(n_layers_),
+          activation(activation_from_string(act)) {
         std::mt19937 rng(42);
         std::normal_distribution<float> dist(0.f, 1.f);
         auto randn = [&](int r, int c) {
@@ -118,21 +115,42 @@ public:
         U = randn(d, 1) * sd;
         P = randn(2, d) * sd;
         float sk = std::sqrt(1.f / static_cast<float>(d));
+
         Wq = randn(d, d) * sk; Wk = randn(d, d) * sk; Wv = randn(d, d) * sk;
-        W1 = randn(ff_hidden, d) * sk; b1.setZero(ff_hidden);
-        W2 = randn(d, ff_hidden) * std::sqrt(1.f / ff_hidden); b2.setZero(d);
         ln1_gamma.setOnes(d); ln1_beta.setZero(d);
         ln2_gamma.setOnes(d); ln2_beta.setZero(d);
+
+        int nW = n_hidden_layers + 1;
+        W.resize(nW);
+        b.resize(nW);
+
+        W[0] = randn(ff_hidden, d) * sk;
+        b[0].setZero(ff_hidden);
+
+        float sk_h = std::sqrt(1.f / static_cast<float>(ff_hidden));
+        for (int i = 1; i < n_hidden_layers; ++i) {
+            W[i] = randn(ff_hidden, ff_hidden) * sk_h;
+            b[i].setZero(ff_hidden);
+        }
+
+        W[n_hidden_layers] = randn(d, ff_hidden) * sk_h;
+        b[n_hidden_layers].setZero(d);
+
         grad.dW_in.resize(1, d); grad.dU.resize(d, 1); grad.dP.resize(2, d);
         grad.dWq.resize(d, d); grad.dWk.resize(d, d); grad.dWv.resize(d, d);
         grad.dln1_gamma.resize(d); grad.dln1_beta.resize(d);
         grad.dln2_gamma.resize(d); grad.dln2_beta.resize(d);
-        grad.dW1.resize(ff_hidden, d); grad.db1.resize(ff_hidden);
-        grad.dW2.resize(d, ff_hidden); grad.db2.resize(d);
+        grad.dW.resize(nW);
+        grad.db.resize(nW);
+        grad.dW[0].resize(ff_hidden, d); grad.db[0].resize(ff_hidden);
+        for (int i = 1; i < n_hidden_layers; ++i) {
+            grad.dW[i].resize(ff_hidden, ff_hidden); grad.db[i].resize(ff_hidden);
+        }
+        grad.dW[n_hidden_layers].resize(d, ff_hidden); grad.db[n_hidden_layers].resize(d);
         zero_grad();
     }
 
-    void zero_grad() { grad.setZero(d, ff_hidden); }
+    void zero_grad() { grad.setZero(); }
 
     Eigen::MatrixXf forward(const Eigen::MatrixXf& coords) {
         int B = coords.rows();
@@ -207,21 +225,34 @@ public:
         Eigen::MatrixXf dff_out_0 = dres2_0;
         Eigen::MatrixXf dff_out_1 = dres2_1;
 
-        Eigen::MatrixXf dff_act_0 = dff_out_0 * W2;
-        Eigen::MatrixXf dff_act_1 = dff_out_1 * W2;
+        int L = n_hidden_layers;
 
-        Eigen::MatrixXf dff_pre_0 = dff_act_0.cwiseProduct(
-            c.ff_pre_0.unaryExpr(ActGradFunctor<float>(activation)));
-        Eigen::MatrixXf dff_pre_1 = dff_act_1.cwiseProduct(
-            c.ff_pre_1.unaryExpr(ActGradFunctor<float>(activation)));
+        Eigen::MatrixXf d_act_0 = dff_out_0 * W[L];
+        Eigen::MatrixXf d_act_1 = dff_out_1 * W[L];
+        grad.dW[L] += dff_out_0.transpose() * c.ff_act_0[L-1]
+                    + dff_out_1.transpose() * c.ff_act_1[L-1];
+        grad.db[L] += (dff_out_0.colwise().sum() + dff_out_1.colwise().sum()).transpose();
 
-        grad.dW2 += dff_out_0.transpose() * c.ff_act_0 + dff_out_1.transpose() * c.ff_act_1;
-        grad.db2 += (dff_out_0.colwise().sum() + dff_out_1.colwise().sum()).transpose();
-        grad.dW1 += dff_pre_0.transpose() * c.ln1_out_0 + dff_pre_1.transpose() * c.ln1_out_1;
-        grad.db1 += (dff_pre_0.colwise().sum() + dff_pre_1.colwise().sum()).transpose();
+        for (int i = L - 1; i >= 0; --i) {
+            Eigen::MatrixXf d_pre_0 = d_act_0.cwiseProduct(
+                c.ff_pre_0[i].unaryExpr(ActGradFunctor<float>(activation)));
+            Eigen::MatrixXf d_pre_1 = d_act_1.cwiseProduct(
+                c.ff_pre_1[i].unaryExpr(ActGradFunctor<float>(activation)));
 
-        dln1_out_0 += dff_pre_0 * W1;
-        dln1_out_1 += dff_pre_1 * W1;
+            const Eigen::MatrixXf& in_0 = (i == 0) ? c.ln1_out_0 : c.ff_act_0[i-1];
+            const Eigen::MatrixXf& in_1 = (i == 0) ? c.ln1_out_1 : c.ff_act_1[i-1];
+
+            grad.dW[i] += d_pre_0.transpose() * in_0 + d_pre_1.transpose() * in_1;
+            grad.db[i] += (d_pre_0.colwise().sum() + d_pre_1.colwise().sum()).transpose();
+
+            if (i > 0) {
+                d_act_0 = d_pre_0 * W[i];
+                d_act_1 = d_pre_1 * W[i];
+            } else {
+                dln1_out_0 += d_pre_0 * W[0];
+                dln1_out_1 += d_pre_1 * W[0];
+            }
+        }
 
         Eigen::MatrixXf dres1_0 = layernorm_bwd(
             dln1_out_0, c.res1_0, ln1_gamma, ln1_beta,
@@ -279,7 +310,9 @@ public:
         Eigen::MatrixXf res1_0, res1_1;
         Eigen::VectorXf mu1_0, var1_0, mu1_1, var1_1;
         Eigen::MatrixXf x_hat1_0, x_hat1_1, ln1_out_0, ln1_out_1;
-        Eigen::MatrixXf ff_pre_0, ff_pre_1, ff_act_0, ff_act_1, ff_out_0, ff_out_1;
+        std::vector<Eigen::MatrixXf> ff_pre_0, ff_pre_1;
+        std::vector<Eigen::MatrixXf> ff_act_0, ff_act_1;
+        Eigen::MatrixXf ff_out_0, ff_out_1;
         Eigen::MatrixXf res2_0, res2_1;
         Eigen::VectorXf mu2_0, var2_0, mu2_1, var2_1;
         Eigen::MatrixXf x_hat2_0, x_hat2_1, ln2_out_0, ln2_out_1;
@@ -313,12 +346,25 @@ private:
     }
 
     void ffwd_batch(const Eigen::MatrixXf& input,
-                    Eigen::MatrixXf& pre, Eigen::MatrixXf& act, Eigen::MatrixXf& out) {
-        pre = input * W1.transpose();
-        pre.rowwise() += b1.transpose();
-        act = pre.unaryExpr(ActFunctor<float>(activation));
-        out = act * W2.transpose();
-        out.rowwise() += b2.transpose();
+                    std::vector<Eigen::MatrixXf>& pre,
+                    std::vector<Eigen::MatrixXf>& act,
+                    Eigen::MatrixXf& out) {
+        int L = n_hidden_layers;
+        pre.resize(L);
+        act.resize(L);
+
+        pre[0] = input * W[0].transpose();
+        pre[0].rowwise() += b[0].transpose();
+        act[0] = pre[0].unaryExpr(ActFunctor<float>(activation));
+
+        for (int i = 1; i < L; ++i) {
+            pre[i] = act[i-1] * W[i].transpose();
+            pre[i].rowwise() += b[i].transpose();
+            act[i] = pre[i].unaryExpr(ActFunctor<float>(activation));
+        }
+
+        out = act[L-1] * W[L].transpose();
+        out.rowwise() += b[L].transpose();
     }
 
     static void layernorm_fwd(const Eigen::MatrixXf& x,

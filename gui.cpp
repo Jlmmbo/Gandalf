@@ -200,6 +200,10 @@ MainWindow::MainWindow() {
     form->addRow("LR:", lr_spin);
     d_model_spin = new QSpinBox; d_model_spin->setRange(8, 1024); d_model_spin->setValue(64);
     form->addRow("d_model:", d_model_spin);
+    neurons_spin = new QSpinBox; neurons_spin->setRange(8, 4096); neurons_spin->setValue(128);
+    form->addRow("Neurons:", neurons_spin);
+    layers_spin = new QSpinBox; layers_spin->setRange(1, 32); layers_spin->setValue(1);
+    form->addRow("Layers:", layers_spin);
 
     weight_decay_spin = new QDoubleSpinBox; weight_decay_spin->setRange(0, 1);
     weight_decay_spin->setDecimals(6); weight_decay_spin->setValue(0);
@@ -294,6 +298,8 @@ void MainWindow::startTraining() {
     worker->batch = batch_spin->value();
     worker->lr = (float)lr_spin->value();
     worker->d_model = d_model_spin->value();
+    worker->ff_hidden = neurons_spin->value();
+    worker->n_hidden_layers = layers_spin->value();
     worker->weight_decay = (float)weight_decay_spin->value();
     worker->activation = activation_combo->currentText().toStdString();
     worker->heatmap_enabled = heatmap_check->isChecked();
@@ -392,13 +398,14 @@ void MainWindow::pollHeatmap() {
 void TrainWorker::run() {
     int R = resolution;
     int d_dim = d_model;
-    int ff_h = d_dim * 2;
+    int ff_h = ff_hidden;
+    int nL = n_hidden_layers;
     int B = batch;
     auto f = [](float x, float y) { return mandelbrot_cont(x, y, GUI_MAX_ITER); };
 
     auto [train_ds, test_ds] = PointDataset::train_test_split(10000, 0.2, f);
 
-    FFNNAttentionModel model(d_dim, ff_h, activation);
+    FFNNAttentionModel model(d_dim, ff_h, nL, activation);
 
     struct MState { Eigen::MatrixXf m, v; };
     std::vector<MState> mat_states;
@@ -410,7 +417,7 @@ void TrainWorker::run() {
     };
     add_mat(model.W_in); add_mat(model.U); add_mat(model.P);
     add_mat(model.Wq); add_mat(model.Wk); add_mat(model.Wv);
-    add_mat(model.W1); add_mat(model.W2);
+    for (auto& w : model.W) add_mat(w);
 
     struct VState { Eigen::VectorXf m, v; };
     std::vector<VState> vec_states;
@@ -422,7 +429,7 @@ void TrainWorker::run() {
     };
     add_vec(model.ln1_gamma); add_vec(model.ln1_beta);
     add_vec(model.ln2_gamma); add_vec(model.ln2_beta);
-    add_vec(model.b1); add_vec(model.b2);
+    for (auto& bv : model.b) add_vec(bv);
 
     float beta1 = 0.9f, beta2 = 0.999f, eps = 1e-8f;
     int t = 0;
@@ -431,9 +438,9 @@ void TrainWorker::run() {
     std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 srng(42);
 
-    emit logMessage(QString("GUI: d=%1 lr=%2 act=%3 batch=%4")
-                    .arg(d_dim).arg(lr).arg(QString::fromStdString(activation))
-                    .arg(B));
+    emit logMessage(QString("GUI: d=%1 ff=%2 layers=%3 lr=%4 act=%5 batch=%6")
+                    .arg(d_dim).arg(ff_h).arg(nL).arg(lr)
+                    .arg(QString::fromStdString(activation)).arg(B));
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
         if (stop_flag.load()) break;
@@ -484,9 +491,11 @@ void TrainWorker::run() {
             if (weight_decay > 0.f) {
                 auto wd = [&](auto& g, const auto& p) { g += weight_decay * p; };
                 wd(model.grad.dWq, model.Wq); wd(model.grad.dWk, model.Wk);
-                wd(model.grad.dWv, model.Wv); wd(model.grad.dW1, model.W1);
-                wd(model.grad.dW2, model.W2); wd(model.grad.dU, model.U);
+                wd(model.grad.dWv, model.Wv);
+                wd(model.grad.dU, model.U);
                 wd(model.grad.dW_in, model.W_in); wd(model.grad.dP, model.P);
+                for (int i = 0; i <= model.n_hidden_layers; ++i)
+                    wd(model.grad.dW[i], model.W[i]);
             }
 
             ++t;
@@ -495,8 +504,8 @@ void TrainWorker::run() {
             std::vector<Eigen::MatrixXf*> mat_gs = {
                 &model.grad.dW_in, &model.grad.dU, &model.grad.dP,
                 &model.grad.dWq, &model.grad.dWk, &model.grad.dWv,
-                &model.grad.dW1, &model.grad.dW2
             };
+            for (auto& dw : model.grad.dW) mat_gs.push_back(&dw);
             for (size_t i = 0; i < mat_ptrs.size(); ++i) {
                 auto& s = mat_states[i];
                 const auto& g = *mat_gs[i];
@@ -507,8 +516,8 @@ void TrainWorker::run() {
             std::vector<Eigen::VectorXf*> vec_gs = {
                 &model.grad.dln1_gamma, &model.grad.dln1_beta,
                 &model.grad.dln2_gamma, &model.grad.dln2_beta,
-                &model.grad.db1, &model.grad.db2
             };
+            for (auto& db : model.grad.db) vec_gs.push_back(&db);
             for (size_t i = 0; i < vec_ptrs.size(); ++i) {
                 auto& s = vec_states[i];
                 const auto& g = *vec_gs[i];

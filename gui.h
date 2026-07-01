@@ -61,6 +61,7 @@ public:
     std::atomic<int> stop_flag{0};
     std::atomic<int> pause_flag{0};
     int resolution = 16, epochs = 200000000, batch = 128, d_model = 64;
+    int ff_hidden = 128, n_hidden_layers = 1;
     float lr = 1e-3f, weight_decay = 0.f;
     std::string activation = "gelu";
     bool heatmap_enabled = true;
@@ -96,6 +97,7 @@ private slots:
 
 private:
     QSpinBox *resolution_spin, *epochs_spin, *batch_spin, *d_model_spin;
+    QSpinBox *neurons_spin, *layers_spin;
     QSpinBox *heatmap_every_spin;
     QDoubleSpinBox *lr_spin, *weight_decay_spin;
     QComboBox *activation_combo;

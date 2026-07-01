@@ -58,8 +58,10 @@ public:
             *p -= (lr * (m.array() / m_bias) / ((v.array() / v_bias).sqrt() + eps)).matrix();
         };
 
-        std::vector<Eigen::MatrixXf*> mat_gs = {&g.dW_in, &g.dU, &g.dP, &g.dWq, &g.dWk, &g.dWv, &g.dW1, &g.dW2};
-        std::vector<Eigen::VectorXf*> vec_gs = {&g.dln1_gamma, &g.dln1_beta, &g.dln2_gamma, &g.dln2_beta, &g.db1, &g.db2};
+        std::vector<Eigen::MatrixXf*> mat_gs = {&g.dW_in, &g.dU, &g.dP, &g.dWq, &g.dWk, &g.dWv};
+        std::vector<Eigen::VectorXf*> vec_gs = {&g.dln1_gamma, &g.dln1_beta, &g.dln2_gamma, &g.dln2_beta};
+        for (auto& dw : g.dW) mat_gs.push_back(&dw);
+        for (auto& db : g.db) vec_gs.push_back(&db);
 
         for (size_t i = 0; i < mat_params.size(); ++i)
             step_mat(mat_params[i], mat_m[i], mat_v[i], *mat_gs[i]);
@@ -70,6 +72,7 @@ public:
 
 int main(int argc, char** argv) {
     int epochs = 200000000, batch = 128, d_model = 64;
+    int ff_hidden = 128, n_hidden_layers = 1;
     float lr = 1e-3f, weight_decay = 0.f;
     std::string activation = "gelu";
     int dataset_size = 10000;
@@ -84,6 +87,8 @@ int main(int argc, char** argv) {
         else if (arg == "--dataset-size" && i + 1 < argc) dataset_size = std::stoi(next());
         else if (arg == "--weight-decay" && i + 1 < argc) weight_decay = std::stof(next());
         else if (arg == "--activation" && i + 1 < argc) activation = next();
+        else if (arg == "--neurons" && i + 1 < argc) ff_hidden = std::stoi(next());
+        else if (arg == "--layers" && i + 1 < argc) n_hidden_layers = std::stoi(next());
         else if (arg == "--gui") {
 #ifdef GANDALF_GUI
             return run_gui(argc, argv);
@@ -99,20 +104,21 @@ int main(int argc, char** argv) {
     auto& train_ds = datasets.first;
     auto& test_ds = datasets.second;
 
-    FFNNAttentionModel model(d_model, d_model * 2, activation);
+    FFNNAttentionModel model(d_model, ff_hidden, n_hidden_layers, activation);
     Adam optim(lr);
     optim.add(model.W_in); optim.add(model.U); optim.add(model.P);
     optim.add(model.Wq); optim.add(model.Wk); optim.add(model.Wv);
     optim.add(model.ln1_gamma); optim.add(model.ln1_beta);
     optim.add(model.ln2_gamma); optim.add(model.ln2_beta);
-    optim.add(model.W1); optim.add(model.b1);
-    optim.add(model.W2); optim.add(model.b2);
+    for (auto& w : model.W) optim.add(w);
+    for (auto& b : model.b) optim.add(b);
 
     std::vector<int> idx(train_ds.get_size());
     std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 srng(42);
 
     std::cout << "Gandalf C++ | d=" << d_model
+              << " ff=" << ff_hidden << " layers=" << n_hidden_layers
               << " lr=" << lr << " act=" << activation
               << " batch=" << batch << " max_iter=" << MAX_ITER << "\n";
 
@@ -156,9 +162,11 @@ int main(int argc, char** argv) {
             if (weight_decay > 0.f) {
                 auto apply_wd = [&](auto& g, const auto& p) { g += weight_decay * p; };
                 apply_wd(model.grad.dWq, model.Wq); apply_wd(model.grad.dWk, model.Wk);
-                apply_wd(model.grad.dWv, model.Wv); apply_wd(model.grad.dW1, model.W1);
-                apply_wd(model.grad.dW2, model.W2); apply_wd(model.grad.dU, model.U);
+                apply_wd(model.grad.dWv, model.Wv);
+                apply_wd(model.grad.dU, model.U);
                 apply_wd(model.grad.dW_in, model.W_in); apply_wd(model.grad.dP, model.P);
+                for (int i = 0; i <= model.n_hidden_layers; ++i)
+                    apply_wd(model.grad.dW[i], model.W[i]);
             }
             optim.step(model.grad);
         }
