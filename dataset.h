@@ -5,31 +5,30 @@
 #include <vector>
 #include <tuple>
 
-class IntegerPairDataset {
+class PointDataset {
 public:
-    int vocab_size, size;
-    std::vector<int> a, b;
+    int resolution, size;
+    std::vector<float> xs, ys;
     std::vector<int> targets;
-    std::function<int(int, int)> f;
 
-    IntegerPairDataset(int vocab, int sz, std::function<int(int, int)> func)
-        : vocab_size(vocab), size(sz), f(std::move(func)) {
+    PointDataset(int res, int sz, std::function<int(float, float)> func)
+        : resolution(res), size(sz) {
         std::mt19937 rng(42);
-        std::uniform_int_distribution<int> dist(0, vocab_size - 1);
-        a.resize(size);
-        b.resize(size);
+        std::uniform_real_distribution<float> dist(0.f, 1.f);
+        xs.resize(size);
+        ys.resize(size);
         targets.resize(size);
         for (int k = 0; k < size; ++k) {
-            a[k] = dist(rng);
-            b[k] = dist(rng);
-            targets[k] = f(a[k], b[k]);
+            xs[k] = dist(rng);
+            ys[k] = dist(rng);
+            targets[k] = func(xs[k], ys[k]);
         }
     }
 
 private:
-    IntegerPairDataset(int vocab, int sz) : vocab_size(vocab), size(sz) {
-        a.resize(size);
-        b.resize(size);
+    PointDataset(int res, int sz) : resolution(res), size(sz) {
+        xs.resize(size);
+        ys.resize(size);
         targets.resize(size);
     }
 
@@ -37,49 +36,55 @@ public:
 
     int get_size() const { return size; }
 
-    std::tuple<int, int, int> get(int idx) const {
-        return {a[idx], b[idx], targets[idx]};
+    std::tuple<float, float, int> get(int idx) const {
+        return {xs[idx], ys[idx], targets[idx]};
     }
 
-    static std::pair<IntegerPairDataset, IntegerPairDataset>
-    train_test_split(int vocab, int total_size, double test_ratio,
-                     std::function<int(int, int)> func) {
+    static std::pair<PointDataset, PointDataset>
+    train_test_split(int resolution, int total_size, double test_ratio,
+                     std::function<int(float, float)> func) {
         int test_sz = static_cast<int>(total_size * test_ratio);
         int train_sz = total_size - test_sz;
-        IntegerPairDataset full(vocab, total_size, std::move(func));
-        IntegerPairDataset train(vocab, train_sz);
-        IntegerPairDataset test(vocab, test_sz);
-        train.a.assign(full.a.begin(), full.a.begin() + train_sz);
-        train.b.assign(full.b.begin(), full.b.begin() + train_sz);
+        PointDataset full(resolution, total_size, std::move(func));
+        PointDataset train(resolution, train_sz);
+        PointDataset test(resolution, test_sz);
+        train.xs.assign(full.xs.begin(), full.xs.begin() + train_sz);
+        train.ys.assign(full.ys.begin(), full.ys.begin() + train_sz);
         train.targets.assign(full.targets.begin(), full.targets.begin() + train_sz);
-        test.a.assign(full.a.begin() + train_sz, full.a.end());
-        test.b.assign(full.b.begin() + train_sz, full.b.end());
+        test.xs.assign(full.xs.begin() + train_sz, full.xs.end());
+        test.ys.assign(full.ys.begin() + train_sz, full.ys.end());
         test.targets.assign(full.targets.begin() + train_sz, full.targets.end());
         return {train, test};
     }
 
-    static std::pair<IntegerPairDataset, IntegerPairDataset>
-    grid_split(int vocab, double test_ratio, std::function<int(int, int)> func) {
-        int n = vocab * vocab;
+    static std::pair<PointDataset, PointDataset>
+    grid_split(int resolution, double test_ratio, std::function<int(float, float)> func) {
+        int n = resolution * resolution;
         int test_sz = static_cast<int>(n * test_ratio);
         int train_sz = n - test_sz;
         std::vector<int> order(n);
         std::iota(order.begin(), order.end(), 0);
         std::shuffle(order.begin(), order.end(), std::mt19937(42));
 
-        IntegerPairDataset train(vocab, train_sz);
-        IntegerPairDataset test(vocab, test_sz);
+        PointDataset train(resolution, train_sz);
+        PointDataset test(resolution, test_sz);
         for (int k = 0; k < train_sz; ++k) {
             int idx = order[k];
-            int i = idx / vocab, j = idx % vocab;
-            train.a[k] = i; train.b[k] = j;
-            train.targets[k] = func(i, j);
+            int i = idx / resolution, j = idx % resolution;
+            float x = (i + 0.5f) / resolution;
+            float y = (j + 0.5f) / resolution;
+            train.xs[k] = x;
+            train.ys[k] = y;
+            train.targets[k] = func(x, y);
         }
         for (int k = 0; k < test_sz; ++k) {
             int idx = order[train_sz + k];
-            int i = idx / vocab, j = idx % vocab;
-            test.a[k] = i; test.b[k] = j;
-            test.targets[k] = func(i, j);
+            int i = idx / resolution, j = idx % resolution;
+            float x = (i + 0.5f) / resolution;
+            float y = (j + 0.5f) / resolution;
+            test.xs[k] = x;
+            test.ys[k] = y;
+            test.targets[k] = func(x, y);
         }
         return {train, test};
     }

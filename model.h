@@ -31,8 +31,22 @@ inline int mandelbrot(int i, int j, int V) {
     return iter;
 }
 
+inline int mandelbrot_cont(float x, float y, int max_iter) {
+    float cx = -2.0f + x * 4.0f;
+    float cy = -2.0f + y * 4.0f;
+    float zx = 0, zy = 0;
+    int iter = 0;
+    while (zx*zx + zy*zy < 4.0f && iter < max_iter) {
+        float tmp = zx*zx - zy*zy + cx;
+        zy = 2.0f * zx * zy + cy;
+        zx = tmp;
+        ++iter;
+    }
+    return iter;
+}
+
 struct Gradients {
-    Eigen::MatrixXf dE, dU, dP;
+    Eigen::MatrixXf dW_in, dU, dP;
     Eigen::MatrixXf dWq, dWk, dWv;
     Eigen::VectorXf dln1_gamma, dln1_beta;
     Eigen::VectorXf dln2_gamma, dln2_beta;
@@ -41,8 +55,8 @@ struct Gradients {
     Eigen::MatrixXf dW2;
     Eigen::VectorXf db2;
 
-    void setZero(int V, int d, int ff_hidden) {
-        dE.setZero(V, d); dU.setZero(d, V); dP.setZero(2, d);
+    void setZero(int d, int ff_hidden, int resolution) {
+        dW_in.setZero(1, d); dU.setZero(d, resolution); dP.setZero(2, d);
         dWq.setZero(d, d); dWk.setZero(d, d); dWv.setZero(d, d);
         dln1_gamma.setZero(d); dln1_beta.setZero(d);
         dln2_gamma.setZero(d); dln2_beta.setZero(d);
@@ -87,10 +101,11 @@ struct ActGradFunctor {
 
 class FFNNAttentionModel {
 public:
-    int V, d, ff_hidden;
+    int resolution, d, ff_hidden;
     Activation activation;
 
-    Eigen::MatrixXf E, U, P;
+    Eigen::MatrixXf W_in;
+    Eigen::MatrixXf U, P;
     Eigen::MatrixXf Wq, Wk, Wv;
     Eigen::VectorXf ln1_gamma, ln1_beta;
     Eigen::VectorXf ln2_gamma, ln2_beta;
@@ -101,9 +116,9 @@ public:
 
     Gradients grad;
 
-    FFNNAttentionModel(int vocab_size, int d_model = 64, int ff_hidden_ = 128,
+    FFNNAttentionModel(int resolution_, int d_model = 64, int ff_hidden_ = 128,
                        const std::string& act = "gelu")
-        : V(vocab_size), d(d_model), ff_hidden(ff_hidden_), activation(activation_from_string(act)) {
+        : resolution(resolution_), d(d_model), ff_hidden(ff_hidden_), activation(activation_from_string(act)) {
         std::mt19937 rng(42);
         std::normal_distribution<float> dist(0.f, 1.f);
         auto randn = [&](int r, int c) {
@@ -114,14 +129,16 @@ public:
             return m;
         };
         float sd = 1.f / std::sqrt(static_cast<float>(d));
-        E = randn(V, d) * sd; U = randn(d, V) * sd; P = randn(2, d) * sd;
+        W_in = randn(1, d) * sd;
+        U = randn(d, resolution) * sd;
+        P = randn(2, d) * sd;
         float sk = std::sqrt(1.f / static_cast<float>(d));
         Wq = randn(d, d) * sk; Wk = randn(d, d) * sk; Wv = randn(d, d) * sk;
         W1 = randn(ff_hidden, d) * sk; b1.setZero(ff_hidden);
         W2 = randn(d, ff_hidden) * std::sqrt(1.f / ff_hidden); b2.setZero(d);
         ln1_gamma.setOnes(d); ln1_beta.setZero(d);
         ln2_gamma.setOnes(d); ln2_beta.setZero(d);
-        grad.dE.resize(V, d); grad.dU.resize(d, V); grad.dP.resize(2, d);
+        grad.dW_in.resize(1, d); grad.dU.resize(d, resolution); grad.dP.resize(2, d);
         grad.dWq.resize(d, d); grad.dWk.resize(d, d); grad.dWv.resize(d, d);
         grad.dln1_gamma.resize(d); grad.dln1_beta.resize(d);
         grad.dln2_gamma.resize(d); grad.dln2_beta.resize(d);
@@ -130,19 +147,16 @@ public:
         zero_grad();
     }
 
-    void zero_grad() { grad.setZero(V, d, ff_hidden); }
+    void zero_grad() { grad.setZero(d, ff_hidden, resolution); }
 
-    Eigen::MatrixXf forward(const Eigen::MatrixXi& indices) {
-        int B = indices.rows();
+    Eigen::MatrixXf forward(const Eigen::MatrixXf& coords) {
+        int B = coords.rows();
         auto& c = cache;
         c.B = B;
-        c.indices = indices;
+        c.coords = coords;
 
-        c.x0.resize(B, d); c.x1.resize(B, d);
-        for (int b = 0; b < B; ++b) {
-            c.x0.row(b) = E.row(indices(b, 0));
-            c.x1.row(b) = E.row(indices(b, 1));
-        }
+        c.x0 = coords.col(0) * W_in;
+        c.x1 = coords.col(1) * W_in;
         c.x0.rowwise() += P.row(0);
         c.x1.rowwise() += P.row(1);
 
@@ -156,7 +170,6 @@ public:
         c.s10 = (c.q1.cwiseProduct(c.k0)).rowwise().sum() * inv_sd;
         c.s11 = (c.q1.cwiseProduct(c.k1)).rowwise().sum() * inv_sd;
 
-        // Vectorized 2-element softmax
         softmax2(c.s00, c.s01, c.a00, c.a01);
         softmax2(c.s10, c.s11, c.a10, c.a11);
 
@@ -209,7 +222,6 @@ public:
         Eigen::MatrixXf dff_out_0 = dres2_0;
         Eigen::MatrixXf dff_out_1 = dres2_1;
 
-        // FFN backward
         Eigen::MatrixXf dff_act_0 = dff_out_0 * W2;
         Eigen::MatrixXf dff_act_1 = dff_out_1 * W2;
 
@@ -238,7 +250,6 @@ public:
         Eigen::MatrixXf datt0 = dres1_0;
         Eigen::MatrixXf datt1 = dres1_1;
 
-        // Attention backward — vectorized
         Eigen::VectorXf da00 = (c.v0.cwiseProduct(datt0)).rowwise().sum();
         Eigen::VectorXf da01 = (c.v1.cwiseProduct(datt0)).rowwise().sum();
         Eigen::VectorXf da10 = (c.v0.cwiseProduct(datt1)).rowwise().sum();
@@ -247,7 +258,6 @@ public:
         Eigen::MatrixXf dv0 = c.a00.asDiagonal() * datt0 + c.a10.asDiagonal() * datt1;
         Eigen::MatrixXf dv1 = c.a01.asDiagonal() * datt0 + c.a11.asDiagonal() * datt1;
 
-        // Softmax backward — vectorized
         softmax2_bwd(c.s00, c.s01, da00, da01, c.a00, c.a01, c.ds00, c.ds01);
         softmax2_bwd(c.s10, c.s11, da10, da11, c.a10, c.a11, c.ds10, c.ds11);
 
@@ -269,15 +279,12 @@ public:
         grad.dP.row(0) += dx0.colwise().sum();
         grad.dP.row(1) += dx1.colwise().sum();
 
-        for (int b = 0; b < B; ++b) {
-            grad.dE.row(c.indices(b, 0)) += dx0.row(b);
-            grad.dE.row(c.indices(b, 1)) += dx1.row(b);
-        }
+        grad.dW_in += c.coords.col(0).transpose() * dx0 + c.coords.col(1).transpose() * dx1;
     }
 
     struct BatchCache {
         int B;
-        Eigen::MatrixXi indices;
+        Eigen::MatrixXf coords;
         Eigen::MatrixXf x0, x1;
         Eigen::MatrixXf q0, q1, k0, k1, v0, v1;
         Eigen::VectorXf s00, s01, s10, s11;
@@ -362,14 +369,11 @@ private:
 
         Eigen::MatrixXf dx_hat = dy.array().rowwise() * gamma.transpose().array();
 
-        // dvar = (-0.5) * inv_std^3 * sum(dx_hat * centered, axis=1)
         Eigen::VectorXf dvar = (dx_hat.cwiseProduct(centered)).rowwise().sum();
         dvar.array() *= (-0.5f) * inv_std.cube();
 
-        // dmu = -inv_std * sum(dx_hat, axis=1)
         Eigen::VectorXf dmu = (dx_hat.array().colwise() * (-inv_std)).rowwise().sum();
 
-        // dx = dx_hat * inv_std + centered * (2/n * dvar) + dmu/n
         Eigen::MatrixXf dx = (dx_hat.array().colwise() * inv_std).matrix();
         dx += (centered.array().colwise() * ((2.f / n) * dvar.array())).matrix();
         dx += (dmu / n) * Eigen::RowVectorXf::Ones(n);

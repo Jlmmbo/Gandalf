@@ -60,14 +60,14 @@ class TrainWorker : public QObject {
 public:
     std::atomic<int> stop_flag{0};
     std::atomic<int> pause_flag{0};
-    int vocab = 16, epochs = 200000000, batch = 128, d_model = 64;
+    int resolution = 16, epochs = 200000000, batch = 128, d_model = 64;
     float lr = 1e-3f, weight_decay = 0.f;
     std::string activation = "gelu";
     bool heatmap_enabled = true;
     int heatmap_every = 1;
     QMutex hm_mutex;
     std::vector<int> hm_pred_data;
-    int hm_V_local = 0;
+    int hm_resolution = 0;
     bool hm_updated = false;
 
 public slots:
@@ -95,7 +95,7 @@ private slots:
     void pollHeatmap();
 
 private:
-    QSpinBox *vocab_spin, *epochs_spin, *batch_spin, *d_model_spin;
+    QSpinBox *resolution_spin, *epochs_spin, *batch_spin, *d_model_spin;
     QSpinBox *heatmap_every_spin;
     QDoubleSpinBox *lr_spin, *weight_decay_spin;
     QComboBox *activation_combo;

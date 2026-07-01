@@ -56,7 +56,7 @@ public:
             *p -= (lr * (m.array() / m_bias) / ((v.array() / v_bias).sqrt() + eps)).matrix();
         };
 
-        std::vector<Eigen::MatrixXf*> mat_gs = {&g.dE, &g.dU, &g.dP, &g.dWq, &g.dWk, &g.dWv, &g.dW1, &g.dW2};
+        std::vector<Eigen::MatrixXf*> mat_gs = {&g.dW_in, &g.dU, &g.dP, &g.dWq, &g.dWk, &g.dWv, &g.dW1, &g.dW2};
         std::vector<Eigen::VectorXf*> vec_gs = {&g.dln1_gamma, &g.dln1_beta, &g.dln2_gamma, &g.dln2_beta, &g.db1, &g.db2};
 
         for (size_t i = 0; i < mat_params.size(); ++i)
@@ -67,14 +67,14 @@ public:
 };
 
 int main(int argc, char** argv) {
-    int vocab = 16, epochs = 200000000, batch = 128, d_model = 64;
+    int resolution = 16, epochs = 200000000, batch = 128, d_model = 64;
     float lr = 1e-3f, weight_decay = 0.f;
     std::string activation = "gelu";
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         auto next = [&]() { return std::string(argv[++i]); };
-        if (arg == "--vocab" && i + 1 < argc) vocab = std::stoi(next());
+        if (arg == "--resolution" && i + 1 < argc) resolution = std::stoi(next());
         else if (arg == "--epochs" && i + 1 < argc) epochs = std::stoi(next());
         else if (arg == "--batch" && i + 1 < argc) batch = std::stoi(next());
         else if (arg == "--lr" && i + 1 < argc) lr = std::stof(next());
@@ -91,14 +91,14 @@ int main(int argc, char** argv) {
         }
     }
 
-    auto f = [vocab](int i, int j) { return mandelbrot(i, j, vocab); };
-    auto datasets = IntegerPairDataset::grid_split(vocab, 0.2, f);
+    auto f = [resolution](float x, float y) { return mandelbrot_cont(x, y, resolution - 1); };
+    auto datasets = PointDataset::grid_split(resolution, 0.2, f);
     auto& train_ds = datasets.first;
     auto& test_ds = datasets.second;
 
-    FFNNAttentionModel model(vocab, d_model, d_model * 2, activation);
+    FFNNAttentionModel model(resolution, d_model, d_model * 2, activation);
     Adam optim(lr);
-    optim.add(model.E); optim.add(model.U); optim.add(model.P);
+    optim.add(model.W_in); optim.add(model.U); optim.add(model.P);
     optim.add(model.Wq); optim.add(model.Wk); optim.add(model.Wv);
     optim.add(model.ln1_gamma); optim.add(model.ln1_beta);
     optim.add(model.ln2_gamma); optim.add(model.ln2_beta);
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 srng(42);
 
-    std::cout << "Gandalf C++ | V=" << vocab << " d=" << d_model
+    std::cout << "Gandalf C++ | res=" << resolution << " d=" << d_model
               << " lr=" << lr << " act=" << activation
               << " batch=" << batch << "\n";
 
@@ -124,20 +124,19 @@ int main(int argc, char** argv) {
             int end = std::min(bi + batch, train_ds.get_size());
             int B = end - bi;
 
-            Eigen::MatrixXi indices(B, 2);
+            Eigen::MatrixXf coords(B, 2);
             Eigen::VectorXi targets(B);
             for (int si = 0; si < B; ++si) {
-                auto [i, j, t] = train_ds.get(idx[bi + si]);
-                indices(si, 0) = i; indices(si, 1) = j;
+                auto [x, y, t] = train_ds.get(idx[bi + si]);
+                coords(si, 0) = x; coords(si, 1) = y;
                 targets(si) = t;
             }
 
             model.zero_grad();
-            Eigen::MatrixXf logits = model.forward(indices);
+            Eigen::MatrixXf logits = model.forward(coords);
 
-            // Cross-entropy loss + accuracy
             float batch_loss = 0.f;
-            Eigen::MatrixXf dlogits(B, vocab);
+            Eigen::MatrixXf dlogits(B, resolution);
             for (int si = 0; si < B; ++si) {
                 Eigen::VectorXf l_row = logits.row(si);
                 float mx = l_row.maxCoeff();
@@ -163,26 +162,25 @@ int main(int argc, char** argv) {
                 apply_wd(model.grad.dWq, model.Wq); apply_wd(model.grad.dWk, model.Wk);
                 apply_wd(model.grad.dWv, model.Wv); apply_wd(model.grad.dW1, model.W1);
                 apply_wd(model.grad.dW2, model.W2); apply_wd(model.grad.dU, model.U);
-                apply_wd(model.grad.dE, model.E); apply_wd(model.grad.dP, model.P);
+                apply_wd(model.grad.dW_in, model.W_in); apply_wd(model.grad.dP, model.P);
             }
             optim.step(model.grad);
         }
         train_loss /= total;
 
-        // Test eval
         int test_correct = 0;
         for (int si = 0; si < test_ds.get_size(); si += batch) {
             int end = std::min(si + batch, test_ds.get_size());
             int B = end - si;
-            Eigen::MatrixXi indices(B, 2);
+            Eigen::MatrixXf coords(B, 2);
             for (int k = 0; k < B; ++k) {
-                auto [i, j, t] = test_ds.get(si + k);
-                indices(k, 0) = i; indices(k, 1) = j;
+                auto [x, y, t] = test_ds.get(si + k);
+                coords(k, 0) = x; coords(k, 1) = y;
             }
-            Eigen::MatrixXf logits = model.forward(indices);
+            Eigen::MatrixXf logits = model.forward(coords);
             for (int k = 0; k < B; ++k) {
                 int pred; logits.row(k).maxCoeff(&pred);
-                auto [i, j, t] = test_ds.get(si + k);
+                auto [x, y, t] = test_ds.get(si + k);
                 if (pred == t) ++test_correct;
             }
         }

@@ -160,8 +160,8 @@ MainWindow::MainWindow() {
     auto* ctrl_group = new QGroupBox("Controls");
     auto* form = new QFormLayout(ctrl_group);
 
-    vocab_spin = new QSpinBox; vocab_spin->setRange(2, 1024); vocab_spin->setValue(16);
-    form->addRow("Vocab:", vocab_spin);
+    resolution_spin = new QSpinBox; resolution_spin->setRange(2, 1024); resolution_spin->setValue(16);
+    form->addRow("Resolution:", resolution_spin);
     epochs_spin = new QSpinBox; epochs_spin->setRange(1, 999999999); epochs_spin->setValue(200000000);
     form->addRow("Epochs:", epochs_spin);
     batch_spin = new QSpinBox; batch_spin->setRange(1, 8192); batch_spin->setValue(128);
@@ -260,7 +260,7 @@ void MainWindow::startTraining() {
     }
 
     worker = new TrainWorker;
-    worker->vocab = vocab_spin->value();
+    worker->resolution = resolution_spin->value();
     worker->epochs = epochs_spin->value();
     worker->batch = batch_spin->value();
     worker->lr = (float)lr_spin->value();
@@ -329,46 +329,49 @@ void MainWindow::onTrainingFinished() {
 void MainWindow::pollHeatmap() {
     if (!worker || !worker->heatmap_enabled) return;
 
-    int V;
+    int R;
     std::vector<int> pred_copy;
     {
         QMutexLocker l(&worker->hm_mutex);
         if (!worker->hm_updated) return;
-        V = worker->hm_V_local;
+        R = worker->hm_resolution;
         pred_copy = worker->hm_pred_data;
         worker->hm_updated = false;
     }
-    if (V < 2) return;
+    if (R < 2) return;
 
-    std::vector<float> tgt(V * V), pred(V * V), diff(V * V);
-    for (int i = 0; i < V; ++i)
-        for (int j = 0; j < V; ++j)
-            tgt[i * V + j] = (float)mandelbrot(i, j, V);
-
-    for (int i = 0; i < V; ++i)
-        for (int j = 0; j < V; ++j) {
-            int pv = pred_copy.empty() ? 0 : pred_copy[i * V + j];
-            pred[i * V + j] = (float)pv;
-            diff[i * V + j] = std::abs(pred[i * V + j] - tgt[i * V + j]);
+    std::vector<float> tgt(R * R), pred(R * R), diff(R * R);
+    for (int i = 0; i < R; ++i)
+        for (int j = 0; j < R; ++j) {
+            float x = (i + 0.5f) / R;
+            float y = (j + 0.5f) / R;
+            tgt[i * R + j] = (float)mandelbrot_cont(x, y, R - 1);
         }
 
-    float max_v = (float)(V - 1);
-    hm_target->setData(tgt, V, V, HeatmapWidget::Target, 0, max_v);
-    hm_pred->setData(pred, V, V, HeatmapWidget::Prediction, 0, max_v);
-    hm_diff->setData(diff, V, V, HeatmapWidget::Diff, 0, max_v);
+    for (int i = 0; i < R; ++i)
+        for (int j = 0; j < R; ++j) {
+            int pv = pred_copy.empty() ? 0 : pred_copy[i * R + j];
+            pred[i * R + j] = (float)pv;
+            diff[i * R + j] = std::abs(pred[i * R + j] - tgt[i * R + j]);
+        }
+
+    float max_v = (float)(R - 1);
+    hm_target->setData(tgt, R, R, HeatmapWidget::Target, 0, max_v);
+    hm_pred->setData(pred, R, R, HeatmapWidget::Prediction, 0, max_v);
+    hm_diff->setData(diff, R, R, HeatmapWidget::Diff, 0, max_v);
 }
 
 // ---- TrainWorker ----
 void TrainWorker::run() {
-    int V = vocab;
+    int R = resolution;
     int d_dim = d_model;
     int ff_h = d_dim * 2;
     int B = batch;
-    auto f = [V](int i, int j) { return mandelbrot(i, j, V); };
+    auto f = [R](float x, float y) { return mandelbrot_cont(x, y, R - 1); };
 
-    auto [train_ds, test_ds] = IntegerPairDataset::grid_split(V, 0.2, f);
+    auto [train_ds, test_ds] = PointDataset::grid_split(R, 0.2, f);
 
-    FFNNAttentionModel model(V, d_dim, ff_h, activation);
+    FFNNAttentionModel model(R, d_dim, ff_h, activation);
 
     struct MState { Eigen::MatrixXf m, v; };
     std::vector<MState> mat_states;
@@ -378,7 +381,7 @@ void TrainWorker::run() {
         mat_states.push_back({Eigen::MatrixXf::Zero(p.rows(), p.cols()),
                               Eigen::MatrixXf::Zero(p.rows(), p.cols())});
     };
-    add_mat(model.E); add_mat(model.U); add_mat(model.P);
+    add_mat(model.W_in); add_mat(model.U); add_mat(model.P);
     add_mat(model.Wq); add_mat(model.Wk); add_mat(model.Wv);
     add_mat(model.W1); add_mat(model.W2);
 
@@ -401,8 +404,8 @@ void TrainWorker::run() {
     std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 srng(42);
 
-    emit logMessage(QString("GUI: V=%1 d=%2 lr=%3 act=%4 batch=%5")
-                    .arg(V).arg(d_dim).arg(lr).arg(QString::fromStdString(activation))
+    emit logMessage(QString("GUI: res=%1 d=%2 lr=%3 act=%4 batch=%5")
+                    .arg(R).arg(d_dim).arg(lr).arg(QString::fromStdString(activation))
                     .arg(B));
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
@@ -424,18 +427,18 @@ void TrainWorker::run() {
             int end = std::min(bi + B, train_ds.get_size());
             int B_actual = end - bi;
 
-            Eigen::MatrixXi indices(B_actual, 2);
+            Eigen::MatrixXf coords(B_actual, 2);
             Eigen::VectorXi targets(B_actual);
             for (int si = 0; si < B_actual; ++si) {
-                auto [i, j, tgt] = train_ds.get(idx[bi + si]);
-                indices(si, 0) = i; indices(si, 1) = j;
+                auto [x, y, tgt] = train_ds.get(idx[bi + si]);
+                coords(si, 0) = x; coords(si, 1) = y;
                 targets(si) = tgt;
             }
 
             model.zero_grad();
-            Eigen::MatrixXf logits = model.forward(indices);
+            Eigen::MatrixXf logits = model.forward(coords);
 
-            Eigen::MatrixXf dlogits(B_actual, V);
+            Eigen::MatrixXf dlogits(B_actual, R);
             for (int si = 0; si < B_actual; ++si) {
                 auto l_row = logits.row(si);
                 float mx = l_row.maxCoeff();
@@ -457,14 +460,14 @@ void TrainWorker::run() {
                 wd(model.grad.dWq, model.Wq); wd(model.grad.dWk, model.Wk);
                 wd(model.grad.dWv, model.Wv); wd(model.grad.dW1, model.W1);
                 wd(model.grad.dW2, model.W2); wd(model.grad.dU, model.U);
-                wd(model.grad.dE, model.E); wd(model.grad.dP, model.P);
+                wd(model.grad.dW_in, model.W_in); wd(model.grad.dP, model.P);
             }
 
             ++t;
             float m_bias = 1.f - std::pow(beta1, t);
             float v_bias = 1.f - std::pow(beta2, t);
             std::vector<Eigen::MatrixXf*> mat_gs = {
-                &model.grad.dE, &model.grad.dU, &model.grad.dP,
+                &model.grad.dW_in, &model.grad.dU, &model.grad.dP,
                 &model.grad.dWq, &model.grad.dWk, &model.grad.dWv,
                 &model.grad.dW1, &model.grad.dW2
             };
@@ -494,15 +497,15 @@ void TrainWorker::run() {
             if (stop_flag.load()) break;
             int end = std::min(si + B, test_ds.get_size());
             int B_actual = end - si;
-            Eigen::MatrixXi tindices(B_actual, 2);
+            Eigen::MatrixXf coords(B_actual, 2);
             for (int k = 0; k < B_actual; ++k) {
-                auto [i, j, tgt] = test_ds.get(si + k);
-                tindices(k, 0) = i; tindices(k, 1) = j;
+                auto [x, y, tgt] = test_ds.get(si + k);
+                coords(k, 0) = x; coords(k, 1) = y;
             }
-            Eigen::MatrixXf logits = model.forward(tindices);
+            Eigen::MatrixXf logits = model.forward(coords);
             for (int k = 0; k < B_actual; ++k) {
                 int pred; logits.row(k).maxCoeff(&pred);
-                auto [i, j, tgt] = test_ds.get(si + k);
+                auto [x, y, tgt] = test_ds.get(si + k);
                 if (pred == tgt) ++test_correct;
             }
         }
@@ -521,18 +524,18 @@ void TrainWorker::run() {
         emit logMessage(QString::fromStdString(oss.str()));
 
         if (heatmap_enabled && (epoch % heatmap_every == 0) && !stop_flag.load()) {
-            std::vector<int> grid_pred(V * V);
-            Eigen::MatrixXi grid_in(V * V, 2);
-            for (int i = 0; i < V; ++i)
-                for (int j = 0; j < V; ++j) {
-                    grid_in(i * V + j, 0) = i;
-                    grid_in(i * V + j, 1) = j;
+            std::vector<int> grid_pred(R * R);
+            Eigen::MatrixXf grid_coords(R * R, 2);
+            for (int i = 0; i < R; ++i)
+                for (int j = 0; j < R; ++j) {
+                    grid_coords(i * R + j, 0) = (i + 0.5f) / R;
+                    grid_coords(i * R + j, 1) = (j + 0.5f) / R;
                 }
-            for (int gs = 0; gs < V * V; gs += 4096) {
+            for (int gs = 0; gs < R * R; gs += 4096) {
                 if (stop_flag.load()) break;
-                int ge = std::min(gs + 4096, V * V);
+                int ge = std::min(gs + 4096, R * R);
                 int gB = ge - gs;
-                Eigen::MatrixXi g_in = grid_in.middleRows(gs, gB);
+                Eigen::MatrixXf g_in = grid_coords.middleRows(gs, gB);
                 Eigen::MatrixXf g_logits = model.forward(g_in);
                 for (int k = 0; k < gB; ++k) {
                     int pred; g_logits.row(k).maxCoeff(&pred);
@@ -542,7 +545,7 @@ void TrainWorker::run() {
             {
                 QMutexLocker l(&hm_mutex);
                 hm_pred_data = std::move(grid_pred);
-                hm_V_local = V;
+                hm_resolution = R;
                 hm_updated = true;
             }
         }
