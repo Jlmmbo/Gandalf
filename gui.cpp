@@ -103,9 +103,11 @@ void AccuracyPlot::paintEvent(QPaintEvent*) {
 
 // ---- HeatmapWidget ----
 void HeatmapWidget::setData(const std::vector<float>& data, int rows, int cols,
-                            Type type, float vmin, float vmax) {
+                            Type type, float vmin, float vmax,
+                            float data_cx, float data_cy, float data_zoom) {
     m_data = data; m_rows = rows; m_cols = cols;
     m_type = type; m_vmin = vmin; m_vmax = vmax;
+    m_data_cx = data_cx; m_data_cy = data_cy; m_data_zoom = data_zoom;
     if (m_vmax <= m_vmin) m_vmax = m_vmin + 1.f;
     update();
 }
@@ -124,8 +126,9 @@ void HeatmapWidget::setViewport(float cx, float cy, float zoom) {
 
 void HeatmapWidget::paintEvent(QPaintEvent*) {
     QPainter p(this);
-    p.fillRect(rect(), QColor(240, 240, 240));
     if (m_data.empty() || m_rows < 1 || m_cols < 1) {
+        p.fillRect(rect(), QColor(0, 0, 0));
+        p.setPen(Qt::white);
         p.drawText(rect(), Qt::AlignCenter, "Waiting...");
         return;
     }
@@ -170,30 +173,40 @@ void HeatmapWidget::paintEvent(QPaintEvent*) {
         return qRgba(int(r * 255), int(g * 255), int(b * 255), 255);
     };
 
-    int W = width(), H = height();
-    QImage img(W, H, QImage::Format_ARGB32);
     float vp_w = 1.0f / m_vp_zoom;
     float vp_h = 1.0f / m_vp_zoom;
-    float x0 = m_vp_cx - vp_w * 0.5f;
-    float x1 = m_vp_cx + vp_w * 0.5f;
-    float y0 = m_vp_cy - vp_h * 0.5f;
-    float y1 = m_vp_cy + vp_h * 0.5f;
+    float vp_x0 = m_vp_cx - vp_w * 0.5f;
+    float vp_x1 = m_vp_cx + vp_w * 0.5f;
+    float vp_y0 = m_vp_cy - vp_h * 0.5f;
+    float vp_y1 = m_vp_cy + vp_h * 0.5f;
+
+    float d_w = 1.0f / m_data_zoom;
+    float d_h = 1.0f / m_data_zoom;
+    float d_x0 = m_data_cx - d_w * 0.5f;
+    float d_x1 = m_data_cx + d_w * 0.5f;
+    float d_y0 = m_data_cy - d_h * 0.5f;
+    float d_y1 = m_data_cy + d_h * 0.5f;
+    if (d_x0 < 0.f) d_x0 = 0.f;
+    if (d_x1 > 1.f) d_x1 = 1.f;
+    if (d_y0 < 0.f) d_y0 = 0.f;
+    if (d_y1 > 1.f) d_y1 = 1.f;
+
+    int W = width(), H = height();
+    QImage img(W, H, QImage::Format_ARGB32);
+    img.fill(qRgba(0, 0, 0, 255));
 
     for (int py = 0; py < H; ++py) {
         auto* scan = (QRgb*)img.scanLine(py);
         float ny = (float)py / H;
-        float dy = y0 + ny * (y1 - y0);
-        if (dy < 0.f) dy = 0.f; else if (dy > 1.f) dy = 1.f;
-        int ri = (int)(dy * (m_rows - 1));
-        if (ri >= m_rows) ri = m_rows - 1;
-        int base = ri * m_cols;
+        float dy = vp_y0 + ny * (vp_y1 - vp_y0);
         for (int px = 0; px < W; ++px) {
             float nx = (float)px / W;
-            float dx = x0 + nx * (x1 - x0);
-            if (dx < 0.f) dx = 0.f; else if (dx > 1.f) dx = 1.f;
-            int ci = (int)(dx * (m_cols - 1));
-            if (ci >= m_cols) ci = m_cols - 1;
-            scan[px] = colormap(m_data[base + ci], m_vmin, m_vmax, m_type);
+            float dx = vp_x0 + nx * (vp_x1 - vp_x0);
+            if (dx >= d_x0 && dx <= d_x1 && dy >= d_y0 && dy <= d_y1) {
+                int ci = (int)((dx - d_x0) / (d_x1 - d_x0) * (m_cols - 1));
+                int ri = (int)((dy - d_y0) / (d_y1 - d_y0) * (m_rows - 1));
+                scan[px] = colormap(m_data[ri * m_cols + ci], m_vmin, m_vmax, m_type);
+            }
         }
     }
     p.drawImage(0, 0, img);
@@ -218,7 +231,7 @@ MainWindow::MainWindow() {
     auto* ctrl_group = new QGroupBox("Controls");
     auto* form = new QFormLayout(ctrl_group);
 
-    resolution_spin = new QSpinBox; resolution_spin->setRange(2, 1024); resolution_spin->setValue(16);
+    resolution_spin = new QSpinBox; resolution_spin->setRange(2, 65536); resolution_spin->setValue(512);
     form->addRow("Resolution:", resolution_spin);
     epochs_spin = new QSpinBox; epochs_spin->setRange(1, 999999999); epochs_spin->setValue(200000000);
     form->addRow("Epochs:", epochs_spin);
@@ -229,9 +242,9 @@ MainWindow::MainWindow() {
     form->addRow("LR:", lr_spin);
     d_model_spin = new QSpinBox; d_model_spin->setRange(8, 1024); d_model_spin->setValue(64);
     form->addRow("d_model:", d_model_spin);
-    neurons_spin = new QSpinBox; neurons_spin->setRange(8, 4096); neurons_spin->setValue(128);
+    neurons_spin = new QSpinBox; neurons_spin->setRange(8, 4096); neurons_spin->setValue(64);
     form->addRow("Neurons:", neurons_spin);
-    layers_spin = new QSpinBox; layers_spin->setRange(1, 32); layers_spin->setValue(1);
+    layers_spin = new QSpinBox; layers_spin->setRange(1, 64); layers_spin->setValue(10);
     form->addRow("Layers:", layers_spin);
 
     weight_decay_spin = new QDoubleSpinBox; weight_decay_spin->setRange(0, 1);
@@ -243,7 +256,7 @@ MainWindow::MainWindow() {
     heatmap_check = new QCheckBox("Enable heatmaps");
     heatmap_check->setChecked(true);
     form->addRow(heatmap_check);
-    heatmap_every_spin = new QSpinBox; heatmap_every_spin->setRange(1, 1000); heatmap_every_spin->setValue(5);
+    heatmap_every_spin = new QSpinBox; heatmap_every_spin->setRange(1, 1000); heatmap_every_spin->setValue(10);
     form->addRow("Heatmap every N:", heatmap_every_spin);
 
     left_lo->addWidget(ctrl_group);
@@ -318,6 +331,11 @@ MainWindow::MainWindow() {
     connect(rst, &QShortcut::activated, this, [this]() {
         m_vp_cx = 0.5f; m_vp_cy = 0.5f; m_vp_zoom = 1.0f;
         updateHeatmapViewport();
+        if (worker) {
+            worker->hm_cx.store(0.5f, std::memory_order_relaxed);
+            worker->hm_cy.store(0.5f, std::memory_order_relaxed);
+            worker->hm_zoom.store(1.0f, std::memory_order_relaxed);
+        }
     });
 
     auto* sk_left = new QShortcut(QKeySequence(Qt::Key_Left), this);
@@ -370,7 +388,14 @@ void MainWindow::startTraining() {
 
     m_hm_resolution = 0;
     m_hm_target.clear();
+    m_hm_cx = 0.5f; m_hm_cy = 0.5f; m_hm_zoom = 1.0f;
     m_vp_cx = 0.5f; m_vp_cy = 0.5f; m_vp_zoom = 1.0f;
+    updateHeatmapViewport();
+    if (worker) {
+        worker->hm_cx.store(0.5f, std::memory_order_relaxed);
+        worker->hm_cy.store(0.5f, std::memory_order_relaxed);
+        worker->hm_zoom.store(1.0f, std::memory_order_relaxed);
+    }
     accuracy_plot->train_errs.clear();
     accuracy_plot->test_errs.clear();
     hm_target->clear();
@@ -409,6 +434,11 @@ void MainWindow::adjustZoom(float factor) {
     if (new_zoom > 128.0f) new_zoom = 128.0f;
     m_vp_zoom = new_zoom;
     updateHeatmapViewport();
+    if (worker) {
+        worker->hm_cx.store(m_vp_cx, std::memory_order_relaxed);
+        worker->hm_cy.store(m_vp_cy, std::memory_order_relaxed);
+        worker->hm_zoom.store(m_vp_zoom, std::memory_order_relaxed);
+    }
 }
 
 void MainWindow::pan(float dx, float dy) {
@@ -420,6 +450,11 @@ void MainWindow::pan(float dx, float dy) {
     if (m_vp_cy < 0.0f) m_vp_cy = 0.0f;
     if (m_vp_cy > 1.0f) m_vp_cy = 1.0f;
     updateHeatmapViewport();
+    if (worker) {
+        worker->hm_cx.store(m_vp_cx, std::memory_order_relaxed);
+        worker->hm_cy.store(m_vp_cy, std::memory_order_relaxed);
+        worker->hm_zoom.store(m_vp_zoom, std::memory_order_relaxed);
+    }
 }
 
 void MainWindow::onEpochDone(int, float train_acc, float test_acc, float) {
@@ -443,25 +478,44 @@ void MainWindow::pollHeatmap() {
     if (!worker || !worker->heatmap_enabled) return;
 
     int R;
+    float vp_cx, vp_cy, vp_zoom;
     std::vector<float> pred_copy;
     {
         QMutexLocker l(&worker->hm_mutex);
         if (!worker->hm_updated) return;
         R = worker->hm_resolution;
         pred_copy = worker->hm_pred_data;
+        vp_cx = worker->hm_pred_cx;
+        vp_cy = worker->hm_pred_cy;
+        vp_zoom = worker->hm_pred_zoom;
         worker->hm_updated = false;
     }
     if (R < 2) return;
 
-    if (R != m_hm_resolution) {
+    float vp_w = 1.0f / vp_zoom;
+    float vp_h = 1.0f / vp_zoom;
+    float x0 = vp_cx - vp_w * 0.5f;
+    float x1 = vp_cx + vp_w * 0.5f;
+    float y0 = vp_cy - vp_h * 0.5f;
+    float y1 = vp_cy + vp_h * 0.5f;
+    if (x0 < 0.f) x0 = 0.f;
+    if (x1 > 1.f) x1 = 1.f;
+    if (y0 < 0.f) y0 = 0.f;
+    if (y1 > 1.f) y1 = 1.f;
+
+    if (R != m_hm_resolution || std::abs(vp_cx - m_hm_cx) > 1e-6f ||
+        std::abs(vp_cy - m_hm_cy) > 1e-6f || std::abs(vp_zoom - m_hm_zoom) > 1e-6f) {
         m_hm_target.resize(R * R);
         for (int i = 0; i < R; ++i)
             for (int j = 0; j < R; ++j) {
-                float x = (i + 0.5f) / R;
-                float y = (j + 0.5f) / R;
+                float x = x0 + (j + 0.5f) / R * (x1 - x0);
+                float y = y0 + (i + 0.5f) / R * (y1 - y0);
                 m_hm_target[i * R + j] = (float)mandelbrot_cont(x, y, GUI_MAX_ITER);
             }
         m_hm_resolution = R;
+        m_hm_cx = vp_cx;
+        m_hm_cy = vp_cy;
+        m_hm_zoom = vp_zoom;
     }
 
     std::vector<float> pred(R * R), diff(R * R);
@@ -471,9 +525,17 @@ void MainWindow::pollHeatmap() {
     }
 
     float max_v = (float)GUI_MAX_ITER;
-    hm_target->setData(m_hm_target, R, R, HeatmapWidget::Target, 0, max_v);
-    hm_pred->setData(pred, R, R, HeatmapWidget::Prediction, 0, max_v);
-    hm_diff->setData(diff, R, R, HeatmapWidget::Diff, 0, max_v);
+    hm_target->setData(m_hm_target, R, R, HeatmapWidget::Target, 0, max_v,
+                       vp_cx, vp_cy, vp_zoom);
+    hm_pred->setData(pred, R, R, HeatmapWidget::Prediction, 0, max_v,
+                     vp_cx, vp_cy, vp_zoom);
+    hm_diff->setData(diff, R, R, HeatmapWidget::Diff, 0, max_v,
+                     vp_cx, vp_cy, vp_zoom);
+
+    m_vp_cx = vp_cx;
+    m_vp_cy = vp_cy;
+    m_vp_zoom = vp_zoom;
+    updateHeatmapViewport();
 }
 
 // ---- TrainWorker ----
@@ -524,15 +586,27 @@ void TrainWorker::run() {
                     .arg(d_dim).arg(ff_h).arg(nL).arg(lr)
                     .arg(QString::fromStdString(activation)).arg(B));
 
-    auto gen_heatmap = [&]() {
+    auto gen_heatmap = [&](float cx, float cy, float zoom) {
         if (!heatmap_enabled) return;
         int HM = std::min(R, 512);
+        float vp_w = 1.0f / zoom;
+        float vp_h = 1.0f / zoom;
+        float x0 = cx - vp_w * 0.5f;
+        float x1 = cx + vp_w * 0.5f;
+        float y0 = cy - vp_h * 0.5f;
+        float y1 = cy + vp_h * 0.5f;
+        if (x0 < 0.f) x0 = 0.f;
+        if (x1 > 1.f) x1 = 1.f;
+        if (y0 < 0.f) y0 = 0.f;
+        if (y1 > 1.f) y1 = 1.f;
         std::vector<float> grid_pred(HM * HM);
         Eigen::MatrixXf grid_coords(HM * HM, 2);
         for (int i = 0; i < HM; ++i)
             for (int j = 0; j < HM; ++j) {
-                grid_coords(i * HM + j, 0) = (i + 0.5f) / HM;
-                grid_coords(i * HM + j, 1) = (j + 0.5f) / HM;
+                float fx = x0 + (j + 0.5f) / HM * (x1 - x0);
+                float fy = y0 + (i + 0.5f) / HM * (y1 - y0);
+                grid_coords(i * HM + j, 0) = fx;
+                grid_coords(i * HM + j, 1) = fy;
             }
         for (int gs = 0; gs < HM * HM; gs += 16384) {
             if (stop_flag.load()) break;
@@ -547,11 +621,14 @@ void TrainWorker::run() {
             QMutexLocker l(&hm_mutex);
             hm_pred_data = std::move(grid_pred);
             hm_resolution = HM;
+            hm_pred_cx = cx;
+            hm_pred_cy = cy;
+            hm_pred_zoom = zoom;
             hm_updated = true;
         }
     };
 
-    gen_heatmap();
+    gen_heatmap(0.5f, 0.5f, 1.0f);
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
         if (stop_flag.load()) break;
@@ -674,8 +751,12 @@ void TrainWorker::run() {
             << " | time " << std::fixed << std::setprecision(2) << elapsed << "s";
         emit logMessage(QString::fromStdString(oss.str()));
 
-        if (heatmap_enabled && (epoch % heatmap_every == 0) && !stop_flag.load())
-            gen_heatmap();
+        if (heatmap_enabled && (epoch % heatmap_every == 0) && !stop_flag.load()) {
+            float cx = hm_cx.load(std::memory_order_relaxed);
+            float cy = hm_cy.load(std::memory_order_relaxed);
+            float zoom = hm_zoom.load(std::memory_order_relaxed);
+            gen_heatmap(cx, cy, zoom);
+        }
     }
 
     stop_flag.store(1);

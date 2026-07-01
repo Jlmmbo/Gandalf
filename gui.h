@@ -44,7 +44,8 @@ class HeatmapWidget : public QWidget {
     Q_OBJECT
 public:
     enum Type { Target, Prediction, Diff, Weight };
-    void setData(const std::vector<float>& data, int rows, int cols, Type type, float vmin, float vmax);
+    void setData(const std::vector<float>& data, int rows, int cols, Type type, float vmin, float vmax,
+                 float data_cx, float data_cy, float data_zoom);
     void setViewport(float cx, float cy, float zoom);
     void clear();
 protected:
@@ -55,6 +56,7 @@ private:
     int m_rows = 0, m_cols = 0;
     Type m_type = Target;
     float m_vmin = 0, m_vmax = 1;
+    float m_data_cx = 0.5f, m_data_cy = 0.5f, m_data_zoom = 1.0f;
     float m_vp_cx = 0.5f, m_vp_cy = 0.5f, m_vp_zoom = 1.0f;
 };
 
@@ -72,7 +74,10 @@ public:
     QMutex hm_mutex;
     std::vector<float> hm_pred_data;
     int hm_resolution = 0;
+    float hm_pred_cx = 0.5f, hm_pred_cy = 0.5f, hm_pred_zoom = 1.0f;
     bool hm_updated = false;
+    std::atomic<int> hm_request_flag{0};
+    std::atomic<float> hm_cx{0.5f}, hm_cy{0.5f}, hm_zoom{1.0f};
 
 public slots:
     void run();
@@ -115,6 +120,7 @@ private:
     QTimer* heatmap_timer = nullptr;
     std::vector<float> m_hm_target;
     int m_hm_resolution = 0;
+    float m_hm_cx = 0.5f, m_hm_cy = 0.5f, m_hm_zoom = 1.0f;
     float m_vp_cx = 0.5f, m_vp_cy = 0.5f, m_vp_zoom = 1.0f;
     void updateHeatmapViewport();
     void adjustZoom(float factor);

@@ -72,7 +72,7 @@ public:
 
 int main(int argc, char** argv) {
     int epochs = 200000000, batch = 128, d_model = 64;
-    int ff_hidden = 128, n_hidden_layers = 1;
+    int ff_hidden = 64, n_hidden_layers = 10;
     float lr = 1e-3f, weight_decay = 0.f;
     std::string activation = "gelu";
     int dataset_size = 10000;
